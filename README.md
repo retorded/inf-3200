@@ -13,15 +13,18 @@ A distributed HTTP server system that automatically builds, deploys, and manages
 
 ```
 tonyt1573/
-├── run.sh                    # Main deployment script
-├── go.mod                    # Go module definition
-├── cmd/server/main.go        # Application entry point
-├── internal/server/server.go # Server implementation
-├── Makefile                  # Build automation
-├── build/                    # Build artifacts (auto-generated)
-└── doc/
-    ├── group.txt            # Group members
-    └── assignment.txt       # Assignment specification
+├── src/                      # Go source code
+│   ├── go.mod               # Go module definition
+│   ├── cmd/server/main.go   # Application entry point
+│   └── internal/server/     # Server implementation
+│       └── server.go
+├── doc/                     # Documentation
+│   └── group.txt           # Group members
+├── run.sh                   # Main deployment script
+├── Makefile                 # Build automation
+├── README.md               # This file
+├── testscript.py           # Test script
+└── build/                  # Build artifacts (auto-generated)
 ```
 
 ## Quick Start
@@ -56,6 +59,12 @@ python3 testscript.py '["c0-1:50153", "c1-0:49001", "c1-1:55737"]'
 ./run.sh cleanup     # Kill old servers only
 ./run.sh build       # Build binary only
 ./run.sh kill        # Kill all running servers
+
+# Makefile commands
+make help            # Show all available commands
+make run             # Deploy 5 servers (init + cleanup + build + deploy)
+make test            # Deploy servers, test, and cleanup
+make deliverable     # Create submission zip file
 ```
 
 ## API Specification
@@ -103,13 +112,27 @@ Then run: `./run.sh 10` (will distribute 10 servers across 3 nodes)
 - SSH access to compute nodes
 - `jq` command-line JSON processor
 
-## Assignment Compliance
+## Creating Deliverable
 
-Fulfills all requirements:
-- HTTP server responding to `/helloworld`
-- Automatic deployment across cluster nodes  
-- Round-robin distribution when servers > nodes
-- JSON output format
-- Zero-configuration first run
-- Proper port management
-- Integration with cluster infrastructure
+Create a submission-ready zip file:
+
+```bash
+# Create zip file with proper structure
+make deliverable
+```
+
+**Deliverable Structure:**
+```
+tonyt1573.zip/
+└── tonyt1573/                    # Top-level folder (UiT username)
+    ├── src/                      # Implementation folder
+    │   ├── go.mod
+    │   ├── cmd/server/main.go
+    │   └── internal/server/server.go
+    ├── doc/
+    │   └── group.txt            # Group members
+    ├── run.sh                   # Main deployment script
+    ├── Makefile                 # Build automation
+    ├── README.md               # Documentation
+    └── testscript.py           # Test script
+```

@@ -74,6 +74,6 @@ deliverable:
 	rm -rf "$$TEMP_DIR"; \
 	mkdir -p "$$TEMP_DIR"; \
 	cp -r src doc run.sh Makefile README.md testscript.py "$$TEMP_DIR/" 2>/dev/null || true; \
-	cd "$$TEMP_DIR" && zip -r "../$$ZIP_NAME" . && cd ..; \
+	zip -r "$$ZIP_NAME" "$$TEMP_DIR"; \
 	rm -rf "$$TEMP_DIR"; \
 	echo "Deliverable created: $$ZIP_NAME"; 
