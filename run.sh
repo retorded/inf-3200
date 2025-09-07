@@ -71,7 +71,7 @@ build() {
 }
 
 # Start function - starts the servers
-start() {
+deploy() {
     echo "Starting $NUM_SERVERS servers..."
     
     # Get available nodes
@@ -154,7 +154,7 @@ elif [[ -n "$COMMAND" ]] && [[ "$COMMAND" =~ ^[0-9]+$ ]]; then
     init
     cleanup
     build
-    start
+    deploy
 else
     echo "Usage: $0 <num_servers> or $0 <command>"
     echo "  $0 5       - Run N servers (init + cleanup + build + run)"
