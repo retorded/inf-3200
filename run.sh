@@ -4,7 +4,7 @@
 COMMAND=$1
 
 # Paths (defined once at the top)
-OUTPUT_DIR="$PWD/build"
+OUTPUT_DIR="build"
 SERVER_BIN="$OUTPUT_DIR/server"
 LOG_DIR="$OUTPUT_DIR/logs"
 JSON_FILE="$OUTPUT_DIR/servers.json"
@@ -16,16 +16,16 @@ init() {
     echo "Initializing Go project..."
     
     # Initialize go module if it doesn't exist
-    if [[ ! -f "$PROJECT_ROOT/go.mod" ]]; then
+    if [[ ! -f "$PROJECT_ROOT/src/go.mod" ]]; then
         echo "Creating go.mod file..."
-        go mod init assignment1
+        cd src && go mod init assignment1 && cd ..
     else
         echo "go.mod already exists"
     fi
 
     # Tidy up dependencies
     echo "Running go mod tidy..."
-    go mod tidy
+    cd src && go mod tidy && cd ..
 
     # Create necessary directories
     echo "Creating output directories..."
@@ -62,7 +62,7 @@ build() {
     mkdir -p "$OUTPUT_DIR" "$LOG_DIR"
 
     # Build the server binary
-    go build -o "$SERVER_BIN" "$GO_SOURCE"
+    cd src && go build -o "../$SERVER_BIN" "$GO_SOURCE" && cd ..
     if [[ $? -ne 0 ]]; then
         echo "Failed to build server binary"
         exit 1
@@ -98,8 +98,8 @@ deploy() {
         # Log file path
         LOG_FILE="$LOG_DIR/server_${NODE}_${PORT}.log"
 
-        # Start server in background
-        ssh -f "$NODE" "$SERVER_BIN -port $PORT > $LOG_FILE 2>&1 &"
+        # Start server using shared NFS path
+        ssh -f "$NODE" "cd $PWD && $SERVER_BIN -port $PORT > $LOG_FILE 2>&1 &"
 
         # Store host:port for JSON output
         HOST_PORTS+=("${NODE}:${PORT}")

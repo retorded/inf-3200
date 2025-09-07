@@ -13,6 +13,8 @@ help:
 	@echo "  make run       - Run $(N) servers (depends on init + cleanup + build)"
 	@echo "  make test      - Run servers and test with Python script"
 	@echo "  make kill      - Kill all running servers"
+	@echo "  make deliverable - Create zip file with proper folder structure (tonyt1573.zip/tonyt1573/)"
+	@echo "  make deliverable D=-d - Create zip file and download to local Downloads folder"
 
 # Initialize Go project
 .PHONY: init
@@ -60,3 +62,18 @@ test: run
 kill:
 	@chmod +x run.sh
 	@./run.sh kill
+
+# Create deliverable zip file with proper folder structure
+.PHONY: deliverable
+deliverable:
+	@echo "Creating deliverable zip file with proper folder structure..."
+	@USERNAME="tonyt1573"; \
+	ZIP_NAME="$$USERNAME.zip"; \
+	TEMP_DIR="$$USERNAME"; \
+	rm -f "$$ZIP_NAME"; \
+	rm -rf "$$TEMP_DIR"; \
+	mkdir -p "$$TEMP_DIR"; \
+	cp -r src doc run.sh Makefile README.md testscript.py "$$TEMP_DIR/" 2>/dev/null || true; \
+	cd "$$TEMP_DIR" && zip -r "../$$ZIP_NAME" . && cd ..; \
+	rm -rf "$$TEMP_DIR"; \
+	echo "Deliverable created: $$ZIP_NAME"; 
