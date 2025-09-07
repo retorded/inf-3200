@@ -25,6 +25,12 @@ tonyt1573/
 ├── README.md               # This file
 ├── testscript.py           # Test script
 └── build/                  # Build artifacts (auto-generated)
+    ├── server              # Compiled Go binary
+    ├── servers.json        # JSON list of deployed servers
+    └── logs/               # Server log files for debugging
+        ├── server_c0-1_50153.log
+        ├── server_c1-0_49001.log
+        └── ...
 ```
 
 ## Quick Start
@@ -104,6 +110,39 @@ NODES=("${NODES[@]:0:3}")
 ```
 
 Then run: `./run.sh 10` (will distribute 10 servers across 3 nodes)
+
+## Build Artifacts
+
+The `build/` directory contains generated files for debugging and monitoring:
+
+### **`build/server`**
+- Compiled Go binary ready for deployment
+- Built from `src/cmd/server/main.go` and `src/internal/server/`
+
+### **`build/servers.json`**
+- JSON array of deployed server endpoints
+- Example: `["c0-1:50153", "c1-0:49001", "c1-1:55737"]`
+- Used by test scripts and for cleanup
+
+### **`build/logs/`**
+- Individual log files for each deployed server
+- Format: `server_<hostname>_<port>.log`
+- Contains server startup, request logs, and error messages
+- Useful for debugging connection issues or server failures
+
+**Example log file:**
+```
+2025/09/07 14:32:28 Server running on hostname: c0-1
+2025/09/07 14:32:28 Server starting on port 50153
+2025/09/07 14:32:30 Request received from 172.21.21.1:45638
+2025/09/07 14:32:30 Shutting down server...
+2025/09/07 14:32:30 Server exited cleanly
+```
+
+**Debugging tips:**
+- Check logs if servers fail to start or respond
+- Look for port conflicts or connection errors
+- Verify server startup and shutdown messages
 
 ## Requirements
 
