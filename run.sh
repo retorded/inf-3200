@@ -75,15 +75,19 @@ deploy() {
     echo "Starting $NUM_SERVERS servers..."
     
     # Get available nodes
-    mapfile -t NODES < <(/share/ifi/available-nodes.sh)
+    mapfile -t AVAILABLE_NODES < <(/share/ifi/available-nodes.sh)
     # For testing round-robin: use only first 3 nodes
     # NODES=("${NODES[@]:0:3}")
-    NUM_NODES=${#NODES[@]}
+    NUM_NODES=${#AVAILABLE_NODES[@]}
     echo "Available nodes: $NUM_NODES"
-    HOST_PORTS=()
 
+    NETWORK=()
+
+    # Find a free ephemeral port on each node
+    NODES=()
+    PORTS=()
     for ((i=0; i<NUM_SERVERS; i++)); do
-        NODE=${NODES[$((i % NUM_NODES))]}
+        NODE=${AVAILABLE_NODES[$((i % NUM_NODES))]}
 
         # Find a free ephemeral port on node
         while true; do
@@ -95,14 +99,27 @@ deploy() {
             fi
         done
 
+        NODES+=("$NODE")
+        PORTS+=("$PORT")
+
+        # Store host:port for JSON output
+        NETWORK+=("${NODE}:${PORT}")
+    done
+
+    # Convert network array to comma-separated string for Go program
+    NETWORK_STR=$(IFS=','; echo "${NETWORK[*]}")
+
+    # Start the servers
+    for ((i=0; i<NUM_SERVERS; i++)); do
+        
+        NODE=${NODES[$i]}
+        PORT=${PORTS[$i]}
+
         # Log file path
         LOG_FILE="$LOG_DIR/server_${NODE}_${PORT}.log"
 
         # Start server using shared NFS path
-        ssh -f "$NODE" "cd $PWD && $SERVER_BIN -port $PORT > $LOG_FILE 2>&1 &"
-
-        # Store host:port for JSON output
-        HOST_PORTS+=("${NODE}:${PORT}")
+        ssh -f "$NODE" "cd $PWD && $SERVER_BIN -port $PORT -network '$NETWORK_STR' > $LOG_FILE 2>&1 &"
     done
 
     echo "Started $NUM_SERVERS servers"
@@ -112,7 +129,7 @@ deploy() {
     # - printf prints each element on a new line
     # - jq -R . wraps each line in quotes
     # - jq -s . collects all lines into a JSON array
-    printf '%s\n' "${HOST_PORTS[@]}" | jq -R . | jq -s -c . | tee "$JSON_FILE"
+    printf '%s\n' "${NETWORK[@]}" | jq -R . | jq -s -c . | tee "$JSON_FILE"
 
 }
 
@@ -132,7 +149,7 @@ kill() {
 
         echo "Killing server on $HOST:$PORT..."
         # Kill any server process matching the binary name and port
-        ssh "$HOST" "pkill -f 'server.*-port $PORT'" || true
+        ssh "$HOST" "pkill -f '$SERVER_BIN.*-port $PORT'" || true
     done
 
     # Remove JSON file after cleanup

@@ -175,3 +175,11 @@ tonyt1573.zip/
     ├── README.md               # Documentation
     └── testscript.py           # Test script
 ```
+
+
+PLAN
+
+1. Pass all nodes as input to all nodes "[c8-11:75748, c11-9:4646 etc]"
+2. Convert to golang slice []string
+3. Convert all to ring id and sort to ascending order
+4. Create finger tables for the node with length M.
