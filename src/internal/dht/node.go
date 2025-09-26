@@ -7,13 +7,15 @@ import (
 )
 
 const (
-	M             = 8
+	M             = 16
 	ID_SPACE_SIZE = 1 << M
 )
 
 type INode interface {
 	Id() int
 	Address() string
+	Successor() (address string)
+	Predecessor() (address string)
 	Put(key string, value string) (nextNodeAddress string)
 	Get(key string) (value string, nextNodeAddress string, err error)
 	String() string
@@ -124,6 +126,16 @@ func (n *Node) Address() string {
 	return n.address
 }
 
+// Successor
+func (n *Node) Successor() (address string) {
+	return n.successor.address
+}
+
+// Successor
+func (n *Node) Predecessor() (address string) {
+	return n.predecessor.address
+}
+
 // Put puts a key-value pair into the ring
 func (n *Node) Put(key string, value string) (nextNodeAddress string) {
 
@@ -133,8 +145,8 @@ func (n *Node) Put(key string, value string) (nextNodeAddress string) {
 	// Check if the key is in the interval of the node
 	if InInterval(keyId, n.id, n.successor.id) {
 		n.data[key] = value
-		log.Printf("Node %d stored key %s (id: %d) and value %s", n.id, key, keyId, value)
-		return "" // Key stored locally, no forwarding needed
+		log.Printf("Node %d stored key %s (id: %d) and value length %d", n.id, key, keyId, len(value))
+		return ""
 	}
 
 	// Lookup the finger table and return the closest preceeding node address
@@ -150,7 +162,7 @@ func (n *Node) Get(key string) (string, string, error) {
 	// Check if the key is in the interval of the node
 	if InInterval(keyId, n.id, n.successor.id) {
 		if value, exists := n.data[key]; exists {
-			log.Printf("Node %d retrieved key '%v' and value '%s'", n.id, key, value)
+			log.Printf("Node %d retrieved key '%v' and value of length '%d'", n.id, key, len(value))
 			return value, "", nil // Found locally, no forwarding needed
 		}
 		return "", "", fmt.Errorf("key not found")
