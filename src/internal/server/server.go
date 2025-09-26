@@ -1,33 +1,26 @@
 package server
 
 import (
+	"assignment1/internal/dht"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"os"
-	"strings"
 	"time"
 )
 
 // Server represents the HTTP server with its configuration
 type Server struct {
+	node       dht.INode
 	httpServer *http.Server
 	hostname   string
 	port       string
 }
 
 // New creates a new server instance with the specified port
-func New(port string) (*Server, error) {
-	// Get hostname
-	hostname, err := os.Hostname()
-	if err != nil {
-		return nil, fmt.Errorf("could not get hostname: %w", err)
-	}
-
-	// Extract just the short name
-	hostnameShort := strings.Split(hostname, ".")[0]
-	log.Printf("Server running on hostname: %s", hostnameShort)
+func New(hostname string, port string, node dht.INode) (*Server, error) {
 
 	// Create HTTP server
 	httpServer := &http.Server{
@@ -39,21 +32,114 @@ func New(port string) (*Server, error) {
 	// Create server instance
 	server := &Server{
 		httpServer: httpServer,
-		hostname:   hostnameShort,
+		hostname:   hostname,
 		port:       port,
+		node:       node,
 	}
 
 	// Register handlers
 	server.registerHandlers()
 
+	log.Printf("Server running on hostname: %s, port: %s", hostname, port)
+	log.Printf("Server node: %s", node.String())
+
 	return server, nil
+}
+
+// GetHostName returns the hostname of the server
+func (s *Server) GetHostName() string {
+	return s.hostname
+}
+
+// GetPort returns the port of the server
+func (s *Server) GetPort() string {
+	return s.port
 }
 
 // registerHandlers sets up the HTTP route handlers
 // TODO future: keep adding handlers here as needed. create separate handlers.go file.
 func (s *Server) registerHandlers() {
-	// Register the handler function for the "/helloworld" path
 	http.HandleFunc("/helloworld", s.helloHandler)
+	http.HandleFunc("/storage/", s.handleStorage)
+	http.HandleFunc("/network", s.handleNetwork)
+}
+
+// helloHandler handles requests to the "/helloworld" path
+func (s *Server) handleStorage(w http.ResponseWriter, r *http.Request) {
+
+	key := r.URL.Path[len("/storage/"):]
+	switch r.Method {
+	case http.MethodGet:
+
+		log.Printf("Server received storage GET for key '%s' ", key)
+
+		// Get the value from the node
+		value, nextNodeAddress, err := s.node.Get(key)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		if nextNodeAddress != "" {
+			// Forward request to the next node
+			redirectAddress := nextNodeAddress + "/storage/" + key
+			http.Redirect(w, r, redirectAddress, http.StatusTemporaryRedirect)
+			log.Printf("Server redirect GET to %s ", redirectAddress)
+			return
+		}
+
+		// Write the response
+		w.WriteHeader(http.StatusOK)
+		_, err = w.Write([]byte(value))
+		if err != nil {
+			http.Error(w, "failed to write response", http.StatusInternalServerError)
+			return
+		}
+
+	case http.MethodPut:
+
+		// Read the body of the request
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "failed to read body", http.StatusInternalServerError)
+			return
+		}
+
+		log.Printf("Server received storage PUT for key: '%s', value: '%s'", key, string(body))
+
+		// Put the key-value pair into the node
+		nextNodeAddress := s.node.Put(key, string(body))
+
+		// If the key doesn't belong to this node, forward the request
+		if nextNodeAddress != "" {
+			// Forward request to the next node
+			http.Redirect(w, r, nextNodeAddress+"/storage/"+key, http.StatusTemporaryRedirect)
+			return
+		}
+
+		// Write the response
+		w.WriteHeader(http.StatusOK)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// helloHandler handles requests to the "/helloworld" path
+func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// TODO traverse the ring and get the network nodes
+	nodes := []string{}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(nodes); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+		return
+	}
 }
 
 // helloHandler handles requests to the "/helloworld" path
@@ -67,7 +153,6 @@ func (s *Server) helloHandler(w http.ResponseWriter, r *http.Request) {
 
 // Start starts the HTTP server in a goroutine
 func (s *Server) Start() error {
-	log.Printf("Server starting on port %s\n", s.port)
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("could not start server: %w", err)
 	}
