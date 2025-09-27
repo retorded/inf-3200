@@ -49,7 +49,7 @@ test: run
 		echo "Testing with: $$SERVERS"; \
 		echo "Waiting 1 second for all servers to be ready..."; \
 		sleep 1; \
-		python3 testscript.py "$$SERVERS"; \
+		python3 run-tester.py "$$SERVERS"; \
 		echo "Test completed. Cleaning up servers..."; \
 		$(MAKE) kill; \
 	else \
@@ -62,6 +62,15 @@ test: run
 kill:
 	@chmod +x run.sh
 	@./run.sh kill
+
+# Benchmark: run throughput tests for different network sizes. Time 1000 GET and PUT requests in 3 trials.
+.PHONY: benchmark
+benchmark: cleanup build
+	@chmod +x run.sh
+	@for size in 16 8 4 2 1; do \
+		echo "Testing network size: $$size"; \
+		./run.sh benchmark $$size 1000 5; \
+	done
 
 # Create deliverable zip file with proper folder structure
 .PHONY: deliverable

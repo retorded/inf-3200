@@ -8,6 +8,7 @@ OUTPUT_DIR="build"
 SERVER_BIN="$OUTPUT_DIR/server"
 LOG_DIR="$OUTPUT_DIR/logs"
 JSON_FILE="$OUTPUT_DIR/servers.json"
+BENCHMARK_FILE="$OUTPUT_DIR/benchmark.csv"
 GO_SOURCE="cmd/server/main.go"
 PROJECT_ROOT="$PWD"
 
@@ -157,6 +158,56 @@ kill() {
     echo "All servers killed and servers.json removed."
 }
 
+benchmark() {
+    local operations=${1:-1000}
+    local trials=${2:-3}
+
+    echo "Starting benchmark for $NUM_SERVERS nodes..."
+
+    # Ensure output directory exists
+    mkdir -p "$OUTPUT_DIR"
+    
+    # Initialize CSV if it doesn't exist
+    if [[ ! -f "$BENCHMARK_FILE" ]]; then
+        echo "timestamp,network_size,trial,operations,put_ops_per_sec,get_ops_per_sec" > "$BENCHMARK_FILE"
+    fi
+    
+    for trial in $(seq 1 $trials); do
+        echo "  Trial $trial/$trials"
+        
+        # Start network
+        deploy
+        # Sleep 2 seconds for server init
+        sleep 2
+        
+        # Get all nodes from JSON file for distribution of test requests
+        if [[ -f "$JSON_FILE" ]]; then
+            # Get all server addresses from JSON file
+            servers=$(jq -r '.[]' "$JSON_FILE" | tr '\n' ',' | sed 's/,$//')
+            
+            # Run benchmark with all servers
+            if python3 chord-benchmark.py \
+                --network-size $NUM_SERVERS \
+                --trial $trial \
+                --operations $operations \
+                --csv-file "$BENCHMARK_FILE" \
+                --servers "$servers"; then
+                echo "Benchmark completed successfully"
+            else 
+                echo "Benchmark failed with errors"
+                return 1
+            fi
+        else
+            echo "ERROR: servers.json not found"
+            continue
+        fi  
+        
+        # Cleanup
+        ./run.sh kill
+        sleep 5
+    done
+}
+
 # Main execution
 if [[ "$COMMAND" == "kill" ]]; then
     kill
@@ -166,6 +217,11 @@ elif [[ "$COMMAND" == "cleanup" ]]; then
     cleanup
 elif [[ "$COMMAND" == "build" ]]; then
     build
+elif [[ "$COMMAND" == "benchmark" ]]; then
+    NUM_SERVERS=$2
+    trials=${3:-1000}
+    operations=${4:-3}
+    benchmark $trials $operations
 elif [[ -n "$COMMAND" ]] && [[ "$COMMAND" =~ ^[0-9]+$ ]]; then
     NUM_SERVERS=$COMMAND
     init
