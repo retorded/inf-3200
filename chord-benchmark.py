@@ -30,7 +30,6 @@ def benchmark_dht(servers, operations=1000):
     
      # Test PUT operations - randomly select server for each request
     put_start = time.time()
-    put_errors = 0
     for key, value in test_data:
         try:
             # Randomly select a server for this request
@@ -39,16 +38,16 @@ def benchmark_dht(servers, operations=1000):
             
             response = requests.put(f"{base_url}/storage/{key}", data=value, timeout=5)
             if response.status_code != 200:
-                put_errors += 1
                 print(f"PUT failed for {key} on {server}: {response.status_code}", file=sys.stderr)
+                sys.exit(1)
+                
         except Exception as e:
-            put_errors += 1
             print(f"PUT error for {key} on {server}: {e}", file=sys.stderr)
+            sys.exit(1)
     put_end = time.time()
     
     # Test GET operations - randomly select server for each request
     get_start = time.time()
-    get_errors = 0
     for key, _ in test_data:
         try:
             # Randomly select a server for this request
@@ -57,11 +56,11 @@ def benchmark_dht(servers, operations=1000):
             
             response = requests.get(f"{base_url}/storage/{key}", timeout=5)
             if response.status_code != 200:
-                get_errors += 1
                 print(f"GET failed for {key} on {server}: {response.status_code}", file=sys.stderr)
+                sys.exit(1)
         except Exception as e:
-            get_errors += 1
             print(f"GET error for {key} on {server}: {e}", file=sys.stderr)
+            sys.exit(1)
     get_end = time.time()
     
     # Calculate throughput
@@ -70,11 +69,6 @@ def benchmark_dht(servers, operations=1000):
     throughput_put = operations / put_time
     throughput_get = operations / get_time
 
-    if put_errors > 0 or get_errors > 0:
-        # Exit with error to stop the proces
-        print(f"PUT errors: {put_errors}/{operations}, GET errors: {get_errors}/{operations}")
-        sys.exit(1)
-    
     return throughput_put, throughput_get
 
 def main():

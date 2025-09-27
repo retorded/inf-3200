@@ -35,24 +35,14 @@ init() {
     echo "Initialization complete!"
 }
 
-# Cleanup function - kills old servers and removes old builds/logs
+# Cleanup function - kills old servers and removes old logs
 cleanup() {
-    echo "Cleaning up old servers..."
-    if [[ -f "$JSON_FILE" ]]; then
-        mapfile -t OLD_HOST_PORTS < <(jq -r '.[]' "$JSON_FILE")
-        for HOSTPORT in "${OLD_HOST_PORTS[@]}"; do
-            HOST="${HOSTPORT%%:*}"
-            PORT="${HOSTPORT##*:}"
-            echo "Killing server on $HOST:$PORT..."
-            ssh "$HOST" "pkill -f '$SERVER_BIN.*-port $PORT'" || true
-        done
-        rm -f "$JSON_FILE"
-    else
-        echo "No servers.json found. Nothing to kill."
-    fi
 
-    echo "Cleaning up old builds and logs..."
-    rm -f "$SERVER_BIN"
+    # Use kill function to handle server cleanup
+    echo "Cleaning up old servers..."
+    kill
+    
+    echo "Cleaning up logs..."
     rm -f "$LOG_DIR"/*.log
 }
 
@@ -148,7 +138,6 @@ kill() {
         HOST="${HOSTPORT%%:*}"
         PORT="${HOSTPORT##*:}"
 
-        echo "Killing server on $HOST:$PORT..."
         # Kill any server process matching the binary name and port
         ssh "$HOST" "pkill -f '$SERVER_BIN.*-port $PORT'" || true
     done
@@ -194,17 +183,18 @@ benchmark() {
                 --servers "$servers"; then
                 echo "Benchmark completed successfully"
             else 
-                echo "Benchmark failed with errors"
-                return 1
+                echo "Benchmark failed with errors - stopping entire benchmark"
+                echo "Logs preserved in: $LOG_DIR"
+                echo " Check server logs for details:"
+                exit 1
             fi
         else
             echo "ERROR: servers.json not found"
             continue
         fi  
-        
-        # Cleanup
-        ./run.sh kill
-        sleep 5
+
+        # Cleanup servers and logs between trials
+        cleanup
     done
 }
 
@@ -219,9 +209,9 @@ elif [[ "$COMMAND" == "build" ]]; then
     build
 elif [[ "$COMMAND" == "benchmark" ]]; then
     NUM_SERVERS=$2
-    trials=${3:-1000}
-    operations=${4:-3}
-    benchmark $trials $operations
+    operations=${3:-1000}
+    trials=${4:-3}
+    benchmark $operations $trials
 elif [[ -n "$COMMAND" ]] && [[ "$COMMAND" =~ ^[0-9]+$ ]]; then
     NUM_SERVERS=$COMMAND
     init

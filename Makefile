@@ -65,11 +65,15 @@ kill:
 
 # Benchmark: run throughput tests for different network sizes. Time 1000 GET and PUT requests in 3 trials.
 .PHONY: benchmark
-benchmark: cleanup build
+benchmark: init cleanup build
 	@chmod +x run.sh
 	@for size in 16 8 4 2 1; do \
 		echo "Testing network size: $$size"; \
 		./run.sh benchmark $$size 1000 5; \
+		if [ $$? -ne 0 ]; then \
+			echo "Benchmark failed for size $$size - stopping entire benchmark"; \
+			exit 1; \
+		fi; \
 	done
 
 # Create deliverable zip file with proper folder structure
