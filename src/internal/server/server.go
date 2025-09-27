@@ -139,9 +139,11 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 	// Start list with this node
 	nodes := []string{s.node.Address()}
 
+	_, succAdr := s.node.Successor()
+
 	// We keep forwarding request, add node to list if not the origin.
-	if s.node.Successor() != origin {
-		forwardURL := fmt.Sprintf("http://%s/network?origin=%s", s.node.Successor(), origin)
+	if succAdr != origin {
+		forwardURL := fmt.Sprintf("http://%s/network?origin=%s", succAdr, origin)
 		resp, err := http.Get(forwardURL)
 		if err == nil {
 			defer resp.Body.Close()
@@ -150,7 +152,7 @@ func (s *Server) handleNetwork(w http.ResponseWriter, r *http.Request) {
 				nodes = append(nodes, succNodes...)
 			}
 		} else {
-			log.Printf("Failed to contact successor %s: %v", s.node.Successor(), err)
+			log.Printf("Failed to contact successor %s: %v", succAdr, err)
 		}
 	}
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"sync"
 )
 
 const (
@@ -14,8 +15,8 @@ const (
 type INode interface {
 	Id() int
 	Address() string
-	Successor() (address string)
-	Predecessor() (address string)
+	Successor() (id int, address string)
+	Predecessor() (id int, address string)
 	Put(key string, value string) (nextNodeAddress string)
 	Get(key string) (value string, nextNodeAddress string, err error)
 	String() string
@@ -26,7 +27,7 @@ type Node struct {
 	predecessor node
 	successor   node
 	finger      []fingerEntry
-	data        map[string]string // Data stored in the node
+	data        sync.Map
 }
 
 type node struct {
@@ -65,7 +66,7 @@ func Create(address string, network []string) *Node {
 
 	// Initialize finger table
 	finger := make([]fingerEntry, M)
-	for i := range M {
+	for i := 0; i < M; i++ {
 		fingerKey := (self.id + (1 << i)) % ID_SPACE_SIZE
 
 		// Default: wrap around to first node
@@ -111,7 +112,6 @@ func Create(address string, network []string) *Node {
 		successor:   nodes[successorIdx],
 		predecessor: nodes[predecessorIdx],
 		finger:      finger,
-		data:        make(map[string]string),
 	}
 }
 
@@ -127,13 +127,13 @@ func (n *Node) Address() string {
 }
 
 // Successor
-func (n *Node) Successor() (address string) {
-	return n.successor.address
+func (n *Node) Successor() (id int, address string) {
+	return n.successor.id, n.successor.address
 }
 
 // Successor
-func (n *Node) Predecessor() (address string) {
-	return n.predecessor.address
+func (n *Node) Predecessor() (id int, address string) {
+	return n.predecessor.id, n.predecessor.address
 }
 
 // Put puts a key-value pair into the ring
@@ -142,51 +142,65 @@ func (n *Node) Put(key string, value string) (nextNodeAddress string) {
 	// Hash the input key
 	keyId := KeyToRingId(key, ID_SPACE_SIZE)
 
-	// Check if the key is in the interval of the node
-	if InInterval(keyId, n.id, n.successor.id) {
-		n.data[key] = value
-		log.Printf("Node %d stored key %s (id: %d) and value length %d", n.id, key, keyId, len(value))
+	// Each key is stored in the successor of key
+	// Successor of k = the first node whose ID is greater than or equal to k
+	if InIntervalRightInclusive(keyId, n.predecessor.id, n.id) {
+		// Thread-safe store using sync.Map
+		n.data.Store(key, value)
+
+		log.Printf("Node %d stored key '%s' (id: %d) and value length '%d'", n.id, key, keyId, len(value))
 		return ""
 	}
 
 	// Lookup the finger table and return the closest preceeding node address
-	return n.closestPreceedingNode(keyId)
+	_, closestPreceedingAddr := n.closestPreceedingNode(keyId)
+	//log.Printf("Put(): Key '%s' (id: %d) not found, check address '%s' (id: %d)", key, keyId, closestPreceedingAddr, closestPreceedingId)
+
+	// Lookup the finger table and return the closest preceeding node address
+	return closestPreceedingAddr
 }
 
 // Get gets a value from the ring
-func (n *Node) Get(key string) (string, string, error) {
+func (n *Node) Get(key string) (value string, nextAddress string, err error) {
 
 	// Hash the input key
 	keyId := KeyToRingId(key, ID_SPACE_SIZE)
 
-	// Check if the key is in the interval of the node
-	if InInterval(keyId, n.id, n.successor.id) {
-		if value, exists := n.data[key]; exists {
-			log.Printf("Node %d retrieved key '%v' and value of length '%d'", n.id, key, len(value))
-			return value, "", nil // Found locally, no forwarding needed
+	// Check if the key is in the interval from the preceeding to self
+	// If the key id == node id, this node takes ownership
+	if InIntervalRightInclusive(keyId, n.predecessor.id, n.id) {
+
+		// Thread-safe load
+		if value, exists := n.data.Load(key); exists {
+			if strValue, ok := value.(string); ok {
+				log.Printf("Node %d retrieved key '%s' (id: %d) and value length '%d'", n.id, key, keyId, len(strValue))
+				return strValue, "", nil
+			}
 		}
 		return "", "", fmt.Errorf("key not found")
 	}
+	_, closestPreceedingAddr := n.closestPreceedingNode(keyId)
+	//log.Printf("Get(): Key '%s' (id: %d) not found, check address '%s' (id: %d)", key, keyId, closestPreceedingAddr, closestPreceedingId)
 
 	// Lookup the finger table and return the closest preceeding node address
-	return "", n.closestPreceedingNode(keyId), nil
+	return "", closestPreceedingAddr, nil
 }
 
-func (n *Node) closestPreceedingNode(keyId int) string {
+func (n *Node) closestPreceedingNode(keyId int) (id int, address string) {
+
 	// Iterate over the finger table and return the closest preceeding node address
 	for i := len(n.finger) - 1; i >= 0; i-- {
 
 		fingerId := n.finger[i].node.id
 
-		// If the finger node is in the interval between this node and the key, return address of the node responsible for that interval
-		if InInterval(fingerId, n.id, keyId) {
-			return n.finger[i].node.address
+		// Open interval to fulfull the strict closest "preceeding"
+		if InIntervalOpen(fingerId, n.id, keyId) {
+			return fingerId, n.finger[i].node.address
 		}
 	}
 
 	// If no finger table entry found, return successor
-	log.Println("WARNING: No finger table entry found, returning successor")
-	return n.successor.address
+	return n.successor.id, n.successor.address
 }
 
 // String returns a string representation of the node
