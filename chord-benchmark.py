@@ -17,9 +17,12 @@ def generate_random_key(length=8):
 def benchmark_dht(servers, operations=1000):
     """Run PUT and GET operations, return throughput"""
 
-    # Parse server list
+# Parse server list
     server_list = servers.split(',')
-    print(f"Using {len(server_list)} servers: {server_list}")
+
+    print(f"Using {len(server_list)} servers, testing {operations} operations of PUT and GET")
+
+    
     
     # Generate random test data for better distribution
     test_data = []

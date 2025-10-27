@@ -55,7 +55,7 @@ make run
 make kill
 
 # Clean up
-./run.sh kill
+make clean
 ```
 
 To perform through-put testing of the chord ring at various node sizes, we use the benchmark target.

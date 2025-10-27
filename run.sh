@@ -61,33 +61,53 @@ build() {
     echo "Build complete: $SERVER_BIN"
 }
 
-# Start function - starts the servers
 deploy() {
     echo "Starting $NUM_SERVERS servers..."
     
     # Get available nodes
     mapfile -t AVAILABLE_NODES < <(/share/ifi/available-nodes.sh)
-    # For testing round-robin: use only first 3 nodes
-    # NODES=("${NODES[@]:0:3}")
     NUM_NODES=${#AVAILABLE_NODES[@]}
     echo "Available nodes: $NUM_NODES"
-
-    NETWORK=()
 
     # Find a free ephemeral port on each node
     NODES=()
     PORTS=()
+    NETWORK=()
     for ((i=0; i<NUM_SERVERS; i++)); do
         NODE=${AVAILABLE_NODES[$((i % NUM_NODES))]}
 
-        # Find a free ephemeral port on node
+        # Start node and perform wellness check. Continue if successful.
         while true; do
+
+            # Create a random port between 49152 and 65535
             PORT=$(shuf -i 49152-65535 -n1)
-            # Check if port is in use
-            IN_USE=$(ssh "$NODE" "ss -tuln | grep -w :$PORT" || true)
-            if [[ -z "$IN_USE" ]]; then
+
+            # Log file path
+            LOG_FILE="$LOG_DIR/server_${NODE}_${PORT}.log"
+
+            # Start server using shared NFS path
+            ssh -f "$NODE" "cd $PWD && $SERVER_BIN -hostname $NODE -port $PORT -logfile $LOG_FILE &"
+
+            # Perform wellness check with manual retry
+            HOST_PORT=""
+            for ((attempt=1; attempt<=10; attempt++)); do
+                HOST_PORT=$(curl -s "http://$NODE:$PORT/helloworld" --connect-timeout 1 --max-time 1 2>/dev/null || echo "")
+                
+                if [[ -n "$HOST_PORT" ]]; then
+                    break
+                fi
+                sleep 0.1
+            done
+
+            # If wellness check succeeded, break out of the retry loop
+            if [[ -n "$HOST_PORT" ]]; then
                 break
             fi
+
+            # Wellness check failed - kill process and try again (new port will be found in next iteration)
+            echo "Wellness check failed for $NODE:$PORT, trying different port..."
+            ssh "$NODE" "pkill -f '$SERVER_BIN.*-port $PORT'" > /dev/null 2>&1
+            # rm -f "$LOG_FILE"
         done
 
         NODES+=("$NODE")
@@ -95,33 +115,32 @@ deploy() {
 
         # Store host:port for JSON output
         NETWORK+=("${NODE}:${PORT}")
+
+        # Save network to JSON file for other functions
+        printf '%s\n' "${NETWORK[@]}" | jq -R . | jq -s -c . > "$JSON_FILE"
     done
 
-    # Convert network array to comma-separated string for Go program
+    echo "All servers started successfully!"
+    
+
+    # Convert network array to comma-separated string for PUT requests
     NETWORK_STR=$(IFS=','; echo "${NETWORK[*]}")
 
-    # Start the servers
-    for ((i=0; i<NUM_SERVERS; i++)); do
-        
-        NODE=${NODES[$i]}
-        PORT=${PORTS[$i]}
+    echo "Network: ${NETWORK_STR}"
 
-        # Log file path
-        LOG_FILE="$LOG_DIR/server_${NODE}_${PORT}.log"
-
-        # Start server using shared NFS path
-        ssh -f "$NODE" "cd $PWD && $SERVER_BIN -port $PORT -network '$NETWORK_STR' > $LOG_FILE 2>&1 &"
+    # Initialize the ring network by sending PUT requests to all nodes
+    echo "Initializing ring network..."
+    for HOST_PORT in "${NETWORK[@]}"; do
+        if ! curl -X PUT "http://$HOST_PORT/network?network=$NETWORK_STR" \
+            -H "Content-Type: application/json" \
+            --connect-timeout 5 \
+            --max-time 10 \
+            --show-error; then
+            echo "ERROR: Failed to initialize node $HOST_PORT"
+            exit 1
+        fi
     done
-
-    echo "Started $NUM_SERVERS servers"
-
-    # Using jq
-    # Explanation:
-    # - printf prints each element on a new line
-    # - jq -R . wraps each line in quotes
-    # - jq -s . collects all lines into a JSON array
-    printf '%s\n' "${NETWORK[@]}" | jq -R . | jq -s -c . | tee "$JSON_FILE"
-
+    echo "Deployment complete! Started $NUM_SERVERS servers."
 }
 
 # Kill function - kills all running servers
@@ -166,7 +185,7 @@ benchmark() {
         
         # Start network
         deploy
-        # Sleep 2 seconds for server init
+
         sleep 2
         
         # Get all nodes from JSON file for distribution of test requests
