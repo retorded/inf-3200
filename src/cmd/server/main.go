@@ -6,51 +6,40 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
-	"assignment1/internal/dht"
 	"assignment1/internal/server"
 )
 
 func main() {
 
-	// Get hostname, extract just the short name
-	hostname, _ := os.Hostname()
-	hostnameShort := strings.Split(hostname, ".")[0]
+	// Get hostname from command line --hostname
+	hostname := flag.String("hostname", "nil", "Hostname of the server")
 
-	// Get port from command line --port
-	// ./server -port xxxx
-	// 0 means a random port will be assigned
-	assignedPort := flag.String("port", "0", "Port to listen on")
+	// Get assigned port from command line --port
+	port := flag.String("port", "0", "Assigned port of the server")
 
-	// Get the network nodes (comma-separated list of addresses with ports)
-	networkStr := flag.String("network", "", "Comma-separated list of network node addresses (e.g., c11-1:50153,c11-2:50154)")
+	// Get log file directory
+	logFilePath := flag.String("logfile", "", "Path to log file")
 	flag.Parse()
 
-	// Parse network addresses
-	var network []string
-	if *networkStr != "" {
-		network = strings.Split(*networkStr, ",")
-		// Trim whitespace from each address
-		for i, addr := range network {
-			network[i] = strings.TrimSpace(addr)
-		}
+	// Create or open log file
+	file, err := os.OpenFile(*logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatal(err)
 	}
+	defer file.Close()
 
-	// Create the ring node, initialize with full network
-	node := dht.Create(hostnameShort+":"+*assignedPort, network)
+	// Set the log output to the file and log flags
+	log.SetOutput(file)
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	// Create server instance
-	srv, err := server.New(hostnameShort, *assignedPort, node)
+	srv, err := server.New(*hostname, *port)
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)
 	}
-
-	// Channel to listen for OS signals (Ctrl+C, kill, etc.)
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	// Start server in goroutine
 	go func() {
@@ -59,14 +48,21 @@ func main() {
 		}
 	}()
 
+	log.Printf("Server started on %s:%s", srv.GetHostName(), srv.GetPort())
+
+	// Channel to listen for OS signals
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
 	// Wait for shutdown signal
 	<-stop
 
-	// Create a context with timeout for graceful shutdown
+	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Stop server gracefully
+	log.Println("Server received shutdown signal")
+
 	if err := srv.Stop(ctx); err != nil {
 		log.Fatalf("Server shutdown error: %v", err)
 	}

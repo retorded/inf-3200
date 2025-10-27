@@ -20,6 +20,7 @@ type INode interface {
 	Put(key string, value string) (nextNodeAddress string)
 	Get(key string) (value string, nextNodeAddress string, err error)
 	String() string
+	FingerTable() []string
 }
 
 type Node struct {
@@ -113,6 +114,27 @@ func Create(address string, network []string) *Node {
 		predecessor: nodes[predecessorIdx],
 		finger:      finger,
 	}
+}
+
+func (n *Node) Stabilize() {
+	// Start the stabilize loop
+	// TODO
+
+	// Ask successor for its predecessor and decide if it should be our new successor
+	// If so, update our successor to the new predecessor
+	// If not, stabilized is reached.
+	// TODO
+}
+
+func (n *Node) FixFingers() {
+	// Fix the finger table of the node
+	// TODO
+}
+
+func (n *Node) CheckPredecessor() {
+	// Check if the predecessor is still alive
+	// If not, update our predecessor to the successor of the predecessor
+	// TODO
 }
 
 // Id returns the id of the node
@@ -214,4 +236,12 @@ func (n *Node) String() string {
 			i, f.start, f.node.id, f.node.address)
 	}
 	return out
+}
+
+func (n *Node) FingerTable() []string {
+	addresses := make([]string, M)
+	for i, f := range n.finger {
+		addresses[i] = f.node.address
+	}
+	return addresses
 }
