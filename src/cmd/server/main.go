@@ -9,7 +9,8 @@ import (
 	"syscall"
 	"time"
 
-	"assignment1/internal/server"
+	"assignment/internal/dht"
+	"assignment/internal/transport"
 )
 
 func main() {
@@ -35,20 +36,32 @@ func main() {
 	log.SetOutput(file)
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	// Create server instance
-	srv, err := server.New(*hostname, *port)
+	// Create node instance
+	node := dht.Create(*hostname + ":" + *port)
+	if err != nil {
+		log.Fatalf("Failed to create node: %v", err)
+	}
+
+	// Create HTTPTransport instance
+	transport, err := transport.New(*hostname, *port, node)
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)
 	}
 
 	// Start server in goroutine
 	go func() {
-		if err := srv.Start(); err != nil {
+		if err := transport.Start(); err != nil {
 			log.Fatalf("Server error: %v", err)
 		}
 	}()
 
-	log.Printf("Server started on %s:%s", srv.GetHostName(), srv.GetPort())
+	log.Printf("Server started on '%s'", transport.Address())
+
+	// Set transport so that node can use it to communicate with other nodes
+	node.SetTransport(transport)
+
+	// Start the maintenance goroutines
+	go node.RunMaintenance(context.Background())
 
 	// Channel to listen for OS signals
 	stop := make(chan os.Signal, 1)
@@ -63,7 +76,7 @@ func main() {
 
 	log.Println("Server received shutdown signal")
 
-	if err := srv.Stop(ctx); err != nil {
+	if err := transport.Stop(ctx); err != nil {
 		log.Fatalf("Server shutdown error: %v", err)
 	}
 }

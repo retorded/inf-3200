@@ -24,31 +24,34 @@ func KeyToRingId(key string, mod int) int {
 }
 
 // (a, b) open interval
-// For closest preceding finger search
+// Used for closest preceding finger search
 func InIntervalOpen(x, a, b int) bool {
 	if a < b {
 		return x > a && x < b
+	} else if a == b {
+		return x != a // entire ring except self
 	}
 	return x > a || x < b // wrap-around
 }
 
-// check if x is in [a, b) on the ring.
-func InIntervalLeftInclusive(x int, a int, b int) bool {
+// [a, b) interval -- inclusive left, exclusive right
+// Used for key ownership checks
+func InIntervalLeftInclusive(x, a, b int) bool {
 	if a < b {
 		return x >= a && x < b
-	} else {
-		// Wrap-around case
-		return x >= a || x < b
+	} else if a == b {
+		return true // entire ring
 	}
+	return x >= a || x < b // wrap-around
 }
 
-// check if x is in [a, b) on the ring.
-// This applies for key ownership
-func InIntervalRightInclusive(x int, a int, b int) bool {
+// (a, b] interval -- exclusive left, inclusive right
+// Used for key ownership checks
+func InIntervalRightInclusive(x, a, b int) bool {
 	if a < b {
-		return x >= a && x <= b
-	} else {
-		// Wrap-around case
-		return x > a || x <= b
+		return x > a && x <= b
+	} else if a == b {
+		return true // entire ring
 	}
+	return x > a || x <= b // wrap-around
 }
