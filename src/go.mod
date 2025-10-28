@@ -1,3 +1,3 @@
-module assignment1
+module assignment
 
 go 1.25.0

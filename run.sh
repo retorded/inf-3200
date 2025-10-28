@@ -62,12 +62,12 @@ build() {
 }
 
 deploy() {
-    echo "Starting $NUM_SERVERS servers..."
     
     # Get available nodes
     mapfile -t AVAILABLE_NODES < <(/share/ifi/available-nodes.sh)
     NUM_NODES=${#AVAILABLE_NODES[@]}
     echo "Available nodes: $NUM_NODES"
+    echo "Starting $NUM_SERVERS servers..."
 
     # Find a free ephemeral port on each node
     NODES=()
@@ -91,7 +91,7 @@ deploy() {
             # Perform wellness check with manual retry
             HOST_PORT=""
             for ((attempt=1; attempt<=10; attempt++)); do
-                HOST_PORT=$(curl -s "http://$NODE:$PORT/helloworld" --connect-timeout 1 --max-time 1 2>/dev/null || echo "")
+                HOST_PORT=$(curl -s "http://$NODE:$PORT/ping" --connect-timeout 1 --max-time 1 2>/dev/null || echo "")
                 
                 if [[ -n "$HOST_PORT" ]]; then
                     break
@@ -107,7 +107,7 @@ deploy() {
             # Wellness check failed - kill process and try again (new port will be found in next iteration)
             echo "Wellness check failed for $NODE:$PORT, trying different port..."
             ssh "$NODE" "pkill -f '$SERVER_BIN.*-port $PORT'" > /dev/null 2>&1
-            # rm -f "$LOG_FILE"
+            rm -f "$LOG_FILE"
         done
 
         NODES+=("$NODE")
@@ -126,21 +126,26 @@ deploy() {
     # Convert network array to comma-separated string for PUT requests
     NETWORK_STR=$(IFS=','; echo "${NETWORK[*]}")
 
-    echo "Network: ${NETWORK_STR}"
+    # # Initialize the ring network by sending PUT requests to all nodes
+    # echo "Initializing ring network..."
+    # for HOST_PORT in "${NETWORK[@]}"; do
+    #     if ! curl -X PUT "http://$HOST_PORT/network?network=$NETWORK_STR" \
+    #         -H "Content-Type: application/json" \
+    #         --connect-timeout 5 \
+    #         --max-time 10 \
+    #         --show-error; then
+    #         echo "ERROR: Failed to initialize node $HOST_PORT"
+    #         exit 1
+    #     fi
+    # done
 
-    # Initialize the ring network by sending PUT requests to all nodes
-    echo "Initializing ring network..."
-    for HOST_PORT in "${NETWORK[@]}"; do
-        if ! curl -X PUT "http://$HOST_PORT/network?network=$NETWORK_STR" \
-            -H "Content-Type: application/json" \
-            --connect-timeout 5 \
-            --max-time 10 \
-            --show-error; then
-            echo "ERROR: Failed to initialize node $HOST_PORT"
-            exit 1
-        fi
-    done
+    # Ask the first node to join the second node
+    # curl -X POST "http://${NETWORK[1]}/join?nprime=${NETWORK[0]}"
+
+
     echo "Deployment complete! Started $NUM_SERVERS servers."
+    #printf '%s\n' "${NETWORK[@]}" | jq -R . | jq -s -c .
+    echo "Network: ${NETWORK[*]}"
 }
 
 # Kill function - kills all running servers

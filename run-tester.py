@@ -8,7 +8,7 @@ failed = False
 
 for address in addresses:
     try:
-        response = requests.get(f"http://{address}/helloworld")
+        response = requests.get(f"http://{address}/ping")
         print(f'received "{response.text}"')
         if response.text != address:
             if response.text.replace(".ifi.uit.no", "") != address:

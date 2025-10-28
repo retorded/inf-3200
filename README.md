@@ -108,7 +108,7 @@ make deliverable     # Create submission zip file
   - **Method**: GET
   - **Response**: JSON array of all node addresses
 
-- **Health Check**: `http://hostname:port/helloworld`
+- **Health Check**: `http://hostname:port/ping`
   - **Method**: GET
   - **Response**: `hostname:port` (for health checking)
 
