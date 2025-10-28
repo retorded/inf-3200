@@ -56,7 +56,7 @@ func Create(address string) *Node {
 	node := &Node{
 		node:        self,
 		successor:   self,
-		predecessor: self,
+		predecessor: node{},
 		finger:      finger,
 	}
 
@@ -148,9 +148,9 @@ func (n *Node) SetTransport(transport Transport) {
 
 // RunMaintenance runs the maintenance goroutines for the node at regular intervals.
 func (n *Node) RunMaintenance(ctx context.Context) {
-	stabilizeTicker := time.NewTicker(1 * time.Second)
-	fixFingerTicker := time.NewTicker(2 * time.Second)
-	checkPredTicker := time.NewTicker(4 * time.Second)
+	stabilizeTicker := time.NewTicker(time.Second / 2)
+	fixFingerTicker := time.NewTicker(1 * time.Second)
+	checkPredTicker := time.NewTicker(2 * time.Second)
 
 	defer func() {
 		stabilizeTicker.Stop()
@@ -187,21 +187,17 @@ func (n *Node) Stabilize() {
 	// Ask successor for its predecessor
 	predAddr, err := n.transport.GetPredecessor(currSuccAddr)
 	if err != nil {
-		log.Printf("Stabilize: error contacting successor %s: %v", currSuccAddr, err)
+		log.Printf("Stabilize: error contacting successor '%s': %v", currSuccAddr, err)
 		return
 	}
-
-	log.Printf("Stabilize: successor '%s' has predecessor '%s'", currSuccAddr, predAddr)
 
 	predId := KeyToRingId(predAddr, ID_SPACE_SIZE)
 
 	// If successor.predecessor is between n and current successor, update
-	if InIntervalOpen(predId, n.Id(), currSuccId) {
+	if InIntervalOpen(predId, n.Id(), currSuccId) && predAddr != "" {
 		log.Printf("Stabilize: updating successor from '%s' -> '%s'", currSuccAddr, predAddr)
 		n.SetSuccessor(predAddr)
 		currSuccAddr = predAddr
-	} else {
-		log.Printf("Stabilize: successor '%s' has predecessor '%s' but it is not in the interval (%d,%d)", currSuccAddr, predAddr, n.Id(), currSuccId)
 	}
 
 	// Always notify successor that you might be its predecessor
@@ -236,9 +232,7 @@ func (n *Node) FixFinger(index int) {
 			id:      successorId,
 			address: successorAddr,
 		}
-		log.Printf("Updated finger table entry %d: start='%v' --> successor='%s' (id: '%d')", index, entry.start, successorAddr, successorId)
 	}
-
 }
 
 // CheckPredecessor detects failed or disconnected predecessors.
@@ -247,7 +241,8 @@ func (n *Node) CheckPredecessor() {
 	_, predAddr := n.Predecessor()
 
 	// If the predecessor is the same as the node ("empty"), do nothing
-	if predAddr == n.Address() {
+	if predAddr == "" {
+		// No predecessor found, do nothing (one-node ring)
 		return
 	}
 
@@ -263,6 +258,26 @@ func (n *Node) CheckPredecessor() {
 		// TODO
 		log.Printf("Predecessor '%s' is not alive, handling failure", predAddr)
 	}
+}
+
+func (n *Node) Leave() error {
+	// Notify the successor that the node is leaving, and update the successor to the predecessor
+	successorId, successorAddr := n.Successor()
+	predecessorId, predecessorAddr := n.Predecessor()
+	if err := n.transport.SetPredecessor(successorAddr, predecessorAddr); err != nil {
+		return fmt.Errorf("failed to notify successor %s: %v", successorAddr, err)
+	}
+	// Notify the predecessor that its new successor is the successor of the node
+	if err := n.transport.SetSuccessor(predecessorAddr, successorAddr); err != nil {
+		return fmt.Errorf("failed to notify predecessor %s: %v", predecessorAddr, err)
+	}
+
+	log.Printf("Node '%s' (id: '%d') is leaving", n.Address(), n.Id())
+	log.Printf("Closed the ring by connecting predecessor '%s' (id: '%d') to successor '%s' (id: '%d')", predecessorAddr, predecessorId, successorAddr, successorId)
+
+	// Reset to starting state
+	n.resetToStartingState()
+	return nil
 }
 
 // Id returns the id of the node
@@ -294,6 +309,24 @@ func (n *Node) Predecessor() (id int, address string) {
 	return n.predecessor.id, n.predecessor.address
 }
 
+// Notify notifies the node that it might have a new predecessor
+func (n *Node) Notify(predecessorAddr string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	potentialPredecessorId := KeyToRingId(predecessorAddr, ID_SPACE_SIZE)
+
+	// Accept if predecessor is empty OR in interval (current predecessor, self]
+	if n.predecessor.address == "" || (potentialPredecessorId != n.id && InIntervalRightInclusive(potentialPredecessorId, n.predecessor.id, n.id)) {
+
+		n.predecessor = node{
+			id:      potentialPredecessorId,
+			address: predecessorAddr,
+		}
+		log.Printf("Updated predecessor to '%s' (id: '%d')", n.predecessor.address, n.predecessor.id)
+	}
+}
+
 // SetPredecessor updates the predecessor if the suggested node is closer.
 func (n *Node) SetPredecessor(predecessorAddr string) {
 	n.mu.Lock()
@@ -301,8 +334,8 @@ func (n *Node) SetPredecessor(predecessorAddr string) {
 
 	potentialPredecessorId := KeyToRingId(predecessorAddr, ID_SPACE_SIZE)
 
-	// Accept if predecessor is "empty" (self) OR in interval (current predecessor, self]
-	if n.predecessor.address == n.address || (potentialPredecessorId != n.id && InIntervalRightInclusive(potentialPredecessorId, n.predecessor.id, n.id)) {
+	// Accept if predecessor is empty OR not the same as the node
+	if n.predecessor.address == "" || potentialPredecessorId != n.id {
 
 		n.predecessor = node{
 			id:      potentialPredecessorId,
@@ -430,4 +463,28 @@ func (n *Node) FingerTable() []string {
 		addresses[i] = f.node.address
 	}
 	return addresses
+}
+
+// HELPER
+
+func (n *Node) resetToStartingState() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.successor = node{
+		id:      n.id,
+		address: n.address,
+	}
+	n.predecessor = node{}
+
+	finger := make([]fingerEntry, M)
+
+	// Initialize finger table with self
+	for i := 0; i < M; i++ {
+		fingerKey := (n.id + (1 << i)) % ID_SPACE_SIZE
+		finger[i] = fingerEntry{
+			start: fingerKey,
+			node:  n.node,
+		}
+	}
 }

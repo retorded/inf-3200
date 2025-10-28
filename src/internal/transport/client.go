@@ -138,6 +138,78 @@ func (t *HTTPTransport) Notify(targetAddr string, newPredecessor string) error {
 	return nil
 }
 
+// Notify notifies the node at the given address that it might have a new predecessor
+func (t *HTTPTransport) SetSuccessor(targetAddr string, newSuccessor string) error {
+
+	// Create JSON payload
+	payload, err := json.Marshal(newSuccessor)
+	if err != nil {
+		return fmt.Errorf("failed to marshal successor: %w", err)
+	}
+
+	// Create PUT request
+	req, err := http.NewRequest("PUT", "http://"+targetAddr+"/successor", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+	}
+
+	// Send request
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to notify node at %s of new successor: %w", targetAddr, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("notify of new successor failed with status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func (t *HTTPTransport) SetPredecessor(targetAddr string, newPredecessor string) error {
+
+	// Create JSON payload
+	payload, err := json.Marshal(newPredecessor)
+	if err != nil {
+		return fmt.Errorf("failed to marshal predecessor: %w", err)
+	}
+
+	// Create PUT request
+	req, err := http.NewRequest("POST", "http://"+targetAddr+"/predecessor", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+	}
+
+	// Send request
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to notify predecessor on %s: %w", targetAddr, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("notify predecessor failed with status %d", resp.StatusCode)
+	}
+
+	return nil
+
+}
+
 // CheckAlive checks if the node at the given address is alive
 func (t *HTTPTransport) CheckAlive(targetAddr string) (bool, error) {
 	client := &http.Client{

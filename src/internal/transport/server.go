@@ -14,35 +14,59 @@ import (
 
 // --------- NODE RPC HANDLERS ---------
 
-// handleSuccessor handles GET requests to the "/successor" path
-// handleSuccessor handles GET /successor?key=<id>
+// handleSuccessor handles GET/PUT requests to the "/successor" path
 func (t *HTTPTransport) handleSuccessor(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+
+	// Switch on the method and perform Get/Set on node
+	switch r.Method {
+	case http.MethodGet:
+		// GET: Read key from URL query parameter
+		keyStr := r.URL.Query().Get("key")
+		if keyStr == "" {
+			http.Error(w, "key is required", http.StatusBadRequest)
+			return
+		}
+
+		keyId, err := strconv.Atoi(keyStr)
+		if err != nil {
+			http.Error(w, "invalid key format", http.StatusBadRequest)
+			return
+		}
+
+		successorAddr, err := t.node.FindSuccessor(keyId)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to find successor: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(successorAddr); err != nil {
+			http.Error(w, "failed to encode successor", http.StatusInternalServerError)
+			return
+		}
+
+	case http.MethodPut:
+		// PUT: Read successor from JSON body
+		var successor string
+		if err := json.NewDecoder(r.Body).Decode(&successor); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		t.node.SetSuccessor(successor)
+
+		// Send response confirming the update
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(map[string]string{
+			"status":    "success",
+			"successor": successor,
+		}); err != nil {
+			log.Printf("Failed to encode response: %v", err)
+		}
+
+	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	keyStr := r.URL.Query().Get("key")
-	if keyStr == "" {
-		http.Error(w, "key is required", http.StatusBadRequest)
-		return
-	}
-
-	keyId, err := strconv.Atoi(keyStr)
-	if err != nil {
-		http.Error(w, "invalid key format", http.StatusBadRequest)
-		return
-	}
-
-	successorAddr, err := t.node.FindSuccessor(keyId)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to find successor: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(successorAddr); err != nil {
-		http.Error(w, "failed to encode successor", http.StatusInternalServerError)
 		return
 	}
 }
@@ -69,7 +93,8 @@ func (t *HTTPTransport) handlePredecessor(w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		t.node.SetPredecessor(predecessor)
+		// Suggest that the node might have a new predecessor
+		t.node.Notify(predecessor)
 
 		// Send response confirming the update
 		w.Header().Set("Content-Type", "application/json")
@@ -81,6 +106,17 @@ func (t *HTTPTransport) handlePredecessor(w http.ResponseWriter, r *http.Request
 			log.Printf("Failed to encode response: %v", err)
 		}
 
+	case http.MethodPost:
+		// Receive "SetPredecessor" request
+		var predecessor string
+		if err := json.NewDecoder(r.Body).Decode(&predecessor); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		// Instruct the node that has a new predecessor
+		t.node.SetPredecessor(predecessor)
+		w.WriteHeader(http.StatusOK)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -287,9 +323,14 @@ func (t *HTTPTransport) handleLeave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// TODO: Implement leave logic
+	err := t.node.Leave()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to leave: %v", err), http.StatusInternalServerError)
+		return
+	}
 
+	log.Println("SERVER: Leave request received")
 	w.WriteHeader(http.StatusOK)
-	log.Println("Leave request received")
 }
 
 // handleSimCrash handles requests to the "/sim-crash" path
