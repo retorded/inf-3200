@@ -1,204 +1,168 @@
+#!/usr/bin/env python3
 import sys
-import requests
 import time
 import random
+import requests
 
-def join_ring(new_node, existing_ring_node):
-    response = requests.post(f"http://{new_node}/join?nprime={existing_ring_node}")
-    print(f"{new_node} JOIN response: {response.status_code}.")
+# === GLOBAL CONFIGURATION ===
+MAX_WAIT = 30          # Seconds to wait for stabilization
+STEP_DELAY = 1         # Delay between joins in graceful mode
+TIMEOUT = 120          # Total experiment timeout
+GRACEFUL_MODE = False  # Join slowly if True
+PRINT_RING_ON_SUCCESS = True
 
-def get_info(node):
-    response = requests.get(f"http://{node}/node-info")
-    info = {}
-    if response.status_code == 200:
-        info = response.json()
-    return info
+
+# === UTILITY WRAPPERS ===
+def log(msg):
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+def http_post(url):
+    try:
+        return requests.post(url, timeout=2)
+    except requests.RequestException as e:
+        log(f"POST {url} failed: {e}")
+        return None
+
+def http_get(url):
+    try:
+        return requests.get(url, timeout=2)
+    except requests.RequestException as e:
+        log(f"GET {url} failed: {e}")
+        return None
+
+
+# === CHORD API HELPERS ===
+def join_ring(new_node, existing_node):
+    resp = http_post(f"http://{new_node}/join?nprime={existing_node}")
+    log(f"{new_node} JOIN → {resp.status_code if resp else 'FAIL'}")
 
 def leave_ring(node):
-    response = requests.post(f"http://{node}/leave")
-    print(f"{node} LEAVE response: {response.status_code}.")
-    return response.status_code == 200
+    resp = http_post(f"http://{node}/leave")
+    log(f"{node} LEAVE → {resp.status_code if resp else 'FAIL'}")
+    return resp and resp.status_code == 200
 
 def crash_node(node):
-    response = requests.post(f"http://{node}/sim-crash")
-    print(f"{node} CRASH response: {response.status_code}.")
-    return response.status_code == 200
+    resp = http_post(f"http://{node}/sim-crash")
+    log(f"{node} CRASH → {resp.status_code if resp else 'FAIL'}")
+    return resp and resp.status_code == 200
 
 def recover_node(node):
-    response = requests.post(f"http://{node}/sim-recover")
-    print(f"{node} RECOVER response: {response.status_code}.")
-    return response.status_code == 200
+    resp = http_post(f"http://{node}/sim-recover")
+    log(f"{node} RECOVER → {resp.status_code if resp else 'FAIL'}")
+    return resp and resp.status_code == 200
 
+def get_info(node):
+    resp = http_get(f"http://{node}/node-info")
+    if resp and resp.status_code == 200:
+        return resp.json()
+    return {}
+
+# === RING INSPECTION ===
 def traverse_ring(start_node):
-    """Traverse the ring and return list of nodes in order"""
-    print(f"\n=== Traversing ring starting from {start_node} ===")
-    
-    visited_nodes = []
-    current_node = start_node
+    """Traverse the Chord ring starting from 'start_node'."""
+    log(f"Traversing ring from {start_node}...")
+    visited, current = [], start_node
     start_time = time.time()
-    max_traversal_time = 30  # 30 seconds max for traversal
-    
-    while current_node and time.time() - start_time < max_traversal_time:
-        info = get_info(current_node)
-        
-        if not info or "node_hash" not in info or "successor" not in info:
-            print(f"ERROR: Could not get info from {current_node}")
+
+    while time.time() - start_time < MAX_WAIT:
+        info = get_info(current)
+        if not info or "successor" not in info:
+            log(f"ERROR: no info from {current}")
             break
-            
-        node_hash = info["node_hash"]
+
         successor = info["successor"]
-        
-        visited_nodes.append({
-            "address": current_node,
-            "hash": node_hash,
-            "successor": successor
-        })
-        
-        # Check if we've completed the ring
-        if successor in [node["address"] for node in visited_nodes]:
-            #print(f"Ring completed! Back to {successor}")
-            break
-            
-        current_node = successor
+        node_hash = info["node_hash"]
+        visited.append({"address": current, "hash": node_hash, "successor": successor})
 
-    return visited_nodes
+        if successor in [n["address"] for n in visited]:
+            break  # completed cycle
+        current = successor
+    return visited
 
-def wait_for_ring_stabilization(start_node, expected_count, timeout=30):
-    """Wait for ring to stabilize with expected node count"""
-    start_time = time.time()
-    while time.time() - start_time < timeout:
+def wait_for_ring_stabilization(start_node, expected_count, timeout=MAX_WAIT):
+    """Poll until the ring has the expected node count."""
+    start = time.time()
+    while time.time() - start < timeout:
         ring = traverse_ring(start_node)
         if len(ring) == expected_count:
+            log(f"Ring stabilized with {expected_count} nodes.")
             return ring
-        print(f"Waiting for ring to stabilize: {len(ring)}/{expected_count} nodes")
+        log(f"Waiting for stabilization: {len(ring)}/{expected_count} nodes...")
         time.sleep(2)
     return None
 
-if len(sys.argv) < 2:
-    print("Usage: python3 network_experiment.py <host:port> [<host:port> ...]")
-    sys.exit(1)
+def print_ring(ring):
+    log(f"=== Ring ({len(ring)} nodes) ===")
+    for n in ring:
+        print(f"{n['hash']:>6} ({n['address']}) --> {n['successor']}")
+    print()
 
 
-host_ports = sys.argv[1:]
-graceful_test = False # Pauses for one second between each request for nodes to join the network. Set to false for proper benchmarking
-max_test_time = 120 # time in seconds before experiment times out
+# === TEST PHASES ===
+def join_all_nodes(hosts):
+    log("=== Phase 1: Joining nodes ===")
+    for node in hosts[1:]:
+        join_ring(node, hosts[0])
+        if GRACEFUL_MODE:
+            time.sleep(STEP_DELAY)
 
-print("Received host:port pairs:", host_ports)
-
-# Phase 1: Join all nodes to the ring
-print("\n=== PHASE 1: Joining nodes to ring ===")
-for node in host_ports[1:]:
-    join_ring(node, host_ports[0])
-    if graceful_test:
-        time.sleep(1)
-
-# Phase 2: Initial ring traversal
-print("\n=== PHASE 2: Initial ring traversal ===")
-start_time = time.time()
-traversed = False
-while not traversed:
-    initial_ring = traverse_ring(host_ports[0])
-    if len(initial_ring) == len(host_ports):
-        print("SUCCESS:All nodes successfully joined the ring!")
-        for node in initial_ring:
-            print(f"{node['hash']} ({node['address']}) --> {node['successor']}")
-        traversed = True
-    else:
-        print(f"ERROR: Ring incomplete: {len(initial_ring)}/{len(host_ports)} nodes")
-        print("Elapsed time:", time.time() - start_time, "seconds")
-        time.sleep(2)
-
-# Phase 3: Test node leaving
-print("\n=== PHASE 3: Testing node leave ===")
-if len(host_ports) < 2:
-    print("ERROR: Stopping test - need at least 2 nodes")
-    sys.exit(1)
-
-# Pick a random node to leave (not the first one)
-node_to_leave = random.choice(host_ports[1:])
-print(f"Asking {node_to_leave} to leave the ring...")
-
-if leave_ring(node_to_leave):
-    print(f"{node_to_leave} successfully left the ring")
-else:
-    print(f"Failed to make {node_to_leave} leave the ring")
-
-
-# Phase 4: Verify ring after leave
-print("\n=== PHASE 4: Verifying ring after leave ===")
-final_ring = traverse_ring(host_ports[0])
-
-expected_nodes = len(host_ports) - 1
-if len(final_ring) == expected_nodes:
-    print(f"Ring is healthy after leave! Contains {len(final_ring)} nodes (expected {expected_nodes})")
-    for node in final_ring:
-        print(f"{node['hash']} ({node['address']}) --> {node['successor']}")
-else:
-    print(f"Ring unhealthy after leave: {len(final_ring)} nodes (expected {expected_nodes})")
-    
-# Check if the leaving node is no longer in the ring
-leaving_node_in_ring = any(node["address"] == node_to_leave for node in final_ring)
-if not leaving_node_in_ring:
-    print(f"{node_to_leave} successfully removed from ring")
-else:
-    print(f"ERROR: {node_to_leave} still present in ring after leave")
-    sys.exit(1)
-
-# Phase 5: Test node crash
-print("\n=== PHASE 5: Testing node crash ===")
-# Pick a different node to crash (not the one that left)
-available_nodes = [node for node in host_ports if node != node_to_leave]
-if len(available_nodes) > 1:
-    node_to_crash = random.choice(available_nodes[1:])  # Don't crash the first available
-    print(f"Asking {node_to_crash} to crash...")
-    
-    if crash_node(node_to_crash):
-        print(f"{node_to_crash} successfully crashed")
-
-        # Traverse ring and see if it is connected and without the crashed node
-        crashed_ring = [node for node in available_nodes if node != node_to_crash]
-        
-        # Wait for ring to stabilize after crash
-        print("Waiting for ring to stabilize after crash...")
-        ring = wait_for_ring_stabilization(crashed_ring[0], len(crashed_ring))
-        if ring:
-            print("SUCCESS: Ring stabilized after crash!")
-            for node in ring:
-                print(f"{node['hash']} ({node['address']}) --> {node['successor']}")
-            
-        else:
-            print("ERROR: Ring failed to stabilize after crash")
-            print("Skipping recovery test due to crash stabilization failure")
-            print("\n=== Experiment completed ===")
-            sys.exit(1)
-    else:
-        print(f"Failed to make {node_to_crash} crash")
-        print("Skipping recovery test due to crash failure")
-        print("\n=== Experiment completed ===")
+def verify_full_ring(hosts):
+    log("=== Phase 2: Verifying ring ===")
+    ring = wait_for_ring_stabilization(hosts[0], len(hosts))
+    if not ring:
+        log("ERROR: Ring did not stabilize after join.")
         sys.exit(1)
-else:
-    print("Skipping crash test - not enough nodes available")
-    print("\n=== Experiment completed ===")
-    sys.exit(0)
+    if PRINT_RING_ON_SUCCESS:
+        print_ring(ring)
+    return ring
 
-# Phase 6: Recover node and verify ring
-print("\n=== PHASE 6: Recovering node and verifying ring ===")
-print(f"Asking {node_to_crash} to recover...")
-if recover_node(node_to_crash):
-    print(f"{node_to_crash} successfully recovered")
-else:
-    print(f"Failed to make {node_to_crash} recover")
-    print("\n=== Experiment completed ===")
-    sys.exit(1)
+def test_graceful_leave(hosts):
+    log("=== Phase 3: Graceful Leave ===")
+    leaving_node = random.choice(hosts[1:])
+    log(f"Node leaving: {leaving_node}")
+    leave_ring(leaving_node)
+    ring = wait_for_ring_stabilization(hosts[0], len(hosts) - 1)
+    if not ring:
+        log("ERROR: Ring unstable after leave.")
+        sys.exit(1)
+    if any(n["address"] == leaving_node for n in ring):
+        log(f"ERROR: {leaving_node} still in ring after leave.")
+        sys.exit(1)
+    log(f"{leaving_node} successfully removed.")
+    print_ring(ring)
+    return [h for h in hosts if h != leaving_node]
 
-# Test to see how long it takes for the ring to stabilize after a node recovers
-print("Waiting for ring to stabilize after recovery...")
-ring = wait_for_ring_stabilization(node_to_crash, len(available_nodes))  # Start from recovered node
-if ring:
-    print("SUCCESS: All nodes successfully stabilized after recovery!")
-    for node in ring:
-        print(f"Node:{node['hash']}--> {node['address']}")
-else:
-    print("ERROR: Ring failed to stabilize after recovery")
+def test_crash_recovery(hosts):
+    log("=== Phase 4: Crash & Recovery ===")
+    node_to_crash = random.choice(hosts[1:])
+    log(f"Crashing node {node_to_crash}...")
+    crash_node(node_to_crash)
+    post_crash_ring = wait_for_ring_stabilization(hosts[0], len(hosts) - 1)
+    if not post_crash_ring:
+        log("ERROR: Ring did not stabilize after crash.")
+        sys.exit(1)
+    print_ring(post_crash_ring)
 
-print("\n=== Experiment completed ===")
+    log(f"Recovering node {node_to_crash}...")
+    recover_node(node_to_crash)
+    recovered_ring = wait_for_ring_stabilization(node_to_crash, len(hosts))
+    if not recovered_ring:
+        log("ERROR: Ring failed to recover after node rejoin.")
+        sys.exit(1)
+    print_ring(recovered_ring)
+
+def run_experiment(hosts):
+    start_time = time.time()
+    join_all_nodes(hosts)
+    verify_full_ring(hosts)
+    alive_hosts = test_graceful_leave(hosts)
+    test_crash_recovery(alive_hosts)
+    log(f"Experiment completed in {round(time.time() - start_time, 1)}s")
+
+
+# === MAIN ===
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python3 chord_test.py <host:port> [<host:port> ...]")
+        sys.exit(1)
+    run_experiment(sys.argv[1:])
