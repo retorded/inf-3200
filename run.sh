@@ -146,6 +146,29 @@ deploy() {
     echo "Deployment complete! Started $NUM_SERVERS servers."
     #printf '%s\n' "${NETWORK[@]}" | jq -R . | jq -s -c .
     echo "Network: ${NETWORK[*]}"
+    echo "Testing ring..."
+    python3 network-experiment.py "${NETWORK[@]}"
+}
+
+leave() {
+    # Sending leave request to all nodes in json file
+    if [[ ! -f "$JSON_FILE" ]]; then
+        echo "No servers.json found. Nothing to kill."
+        return 0
+    fi
+
+    # Read JSON array into bash array
+    mapfile -t HOST_PORTS < <(jq -r '.[]' "$JSON_FILE")
+
+    for HOSTPORT in "${HOST_PORTS[@]}"; do
+        HOST="${HOSTPORT%%:*}"
+        PORT="${HOSTPORT##*:}"
+
+        # Kill any server process matching the binary name and port
+        curl -X POST "http://$HOST:$PORT/leave"
+    done
+
+    echo "All nodes left the ring."
 }
 
 # Kill function - kills all running servers

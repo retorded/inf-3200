@@ -401,3 +401,14 @@ func forwardRequest(w http.ResponseWriter, method, url string, body []byte) {
 		log.Printf("ERROR: Failed to copy response from %s: %v", url, err)
 	}
 }
+
+// refuseRequest returns a 503 Service Unavailable response
+func refuseRequest(w http.ResponseWriter, r *http.Request) {
+	http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+}
+
+// isServerError checks if the response indicates a server error (500/503)
+func isServerError(resp *http.Response) bool {
+	return resp.StatusCode == http.StatusInternalServerError || 
+		   resp.StatusCode == http.StatusServiceUnavailable
+}

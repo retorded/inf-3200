@@ -18,7 +18,7 @@ if len(sys.argv) < 2:
     sys.exit(1)
 
 host_ports = sys.argv[1:]
-graceful_test = True # Pauses for one second between each request for nodes to join the network. Set to false for proper benchmarking
+graceful_test = False # Pauses for one second between each request for nodes to join the network. Set to false for proper benchmarking
 max_test_time = 120 # time in seconds before experiment times out
 
 print("Received host:port pairs:", host_ports)

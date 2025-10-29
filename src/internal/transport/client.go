@@ -27,11 +27,7 @@ func New(hostname string, port string, node dht.INode) (*HTTPTransport, error) {
 	mux := http.NewServeMux()
 
 	t := &HTTPTransport{
-		node: node,
-		server: &http.Server{
-			Addr:    ":" + port,
-			Handler: mux,
-		},
+		node:    node,
 		address: hostname + ":" + port,
 	}
 
@@ -45,13 +41,37 @@ func New(hostname string, port string, node dht.INode) (*HTTPTransport, error) {
 	mux.HandleFunc("/sim-crash", t.handleSimCrash)
 	mux.HandleFunc("/sim-recover", t.handleSimRecover)
 
-	// node endpoints
+	// node rpc endpoints
 	mux.HandleFunc("/predecessor", t.handlePredecessor) // endpoint to get/put predecessor of the node
-	mux.HandleFunc("/successor", t.handleSuccessor)     // endpoint to get the successor of the node
+	mux.HandleFunc("/successor", t.handleSuccessor)     // endpoint to get/put the successor of the node
+
+	// Wrap the mux with crash middleware
+	t.server = &http.Server{
+		Addr:    ":" + port,
+		Handler: t.crashMiddleware(mux),
+	}
 
 	log.Printf("Transport created on '%s'", t.address)
-
 	return t, nil
+}
+
+// crashMiddleware wraps the entire mux to check crash status
+func (t *HTTPTransport) crashMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Allow sim-recover even when crashed
+		if r.URL.Path == "/sim-recover" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Refuse all other requests if crashed
+		if t.crash {
+			refuseRequest(w, r)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Start starts the HTTP server in a goroutine
@@ -250,4 +270,8 @@ func (t *HTTPTransport) FindSuccessor(addr string, keyId int) (successor string,
 	}
 
 	return successor, nil
+}
+
+func (t *HTTPTransport) IsCrashed() bool {
+	return t.crash
 }

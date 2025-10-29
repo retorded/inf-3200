@@ -148,9 +148,9 @@ func (n *Node) SetTransport(transport Transport) {
 
 // RunMaintenance runs the maintenance goroutines for the node at regular intervals.
 func (n *Node) RunMaintenance(ctx context.Context) {
-	stabilizeTicker := time.NewTicker(2 * time.Second)
-	fixFingerTicker := time.NewTicker(3 * time.Second)
-	checkPredTicker := time.NewTicker(5 * time.Second)
+	stabilizeTicker := time.NewTicker(time.Duration(500) * time.Millisecond)
+	fixFingerTicker := time.NewTicker(time.Duration(500) * time.Millisecond)
+	checkPredTicker := time.NewTicker(time.Duration(1000) * time.Millisecond)
 
 	defer func() {
 		stabilizeTicker.Stop()
@@ -166,14 +166,20 @@ func (n *Node) RunMaintenance(ctx context.Context) {
 			return
 
 		case <-stabilizeTicker.C:
-			go n.Stabilize()
+			if !n.transport.IsCrashed() {
+				go n.Stabilize()
+			}
 
 		case <-fixFingerTicker.C:
-			nextFingerIndex = (nextFingerIndex + 1) % M
-			go n.FixFinger(nextFingerIndex)
+			if !n.transport.IsCrashed() {
+				go n.FixFinger(nextFingerIndex)
+				nextFingerIndex = (nextFingerIndex + 1) % M
+			}
 
 		case <-checkPredTicker.C:
-			go n.CheckPredecessor()
+			if !n.transport.IsCrashed() {
+				go n.CheckPredecessor()
+			}
 		}
 	}
 }
@@ -182,6 +188,7 @@ func (n *Node) RunMaintenance(ctx context.Context) {
 // Verify and update successor/predecessor links; detect node joins.
 // New node runs stabilize which will inform others about its existence.
 func (n *Node) Stabilize() {
+
 	currSuccId, currSuccAddr := n.Successor()
 
 	// If successor is self, we already know its predecessor locally
@@ -191,57 +198,86 @@ func (n *Node) Stabilize() {
 			predId := KeyToRingId(predAddr, ID_SPACE_SIZE)
 			if InIntervalOpen(predId, n.Id(), currSuccId) {
 				n.SetSuccessor(predAddr)
-				currSuccAddr = predAddr
 			}
 		}
 	} else {
 		// successor is another node — fetch its predecessor over transport
-		predAddr, err := n.transport.GetPredecessor(currSuccAddr)
-		if err != nil {
-			log.Printf("Stabilize: error contacting successor '%s': %v", currSuccAddr, err)
-			return
-		}
+		candidates := n.closestSuccessorNodes()
 
-		predId := KeyToRingId(predAddr, ID_SPACE_SIZE)
-		if predAddr != "" && InIntervalOpen(predId, n.Id(), currSuccId) {
-			log.Printf("Stabilize: updating successor from '%s' -> '%s'", currSuccAddr, predAddr)
-			n.SetSuccessor(predAddr)
-			currSuccAddr = predAddr
+		for _, candidate := range candidates {
+			predAddr, err := n.transport.GetPredecessor(candidate)
+			log.Printf("Stabilize: got predecessor '%s' from candidate '%s'", predAddr, candidate)
+			if err != nil {
+				log.Printf("Stabilize WARNING: failed to get predecessor from candidate successor '%s': %v", candidate, err)
+				log.Println("Stabilize: candidates list", candidates)
+				continue
+			}
+
+			if predAddr != "" && predAddr != n.Address() {
+				predId := KeyToRingId(predAddr, ID_SPACE_SIZE)
+				currSuccId, _ = n.Successor() // refresh
+				if InIntervalOpen(predId, n.Id(), currSuccId) {
+					n.SetSuccessor(predAddr)
+					log.Printf("Stabilize: in interval, successor set to '%s' (id: '%d')", predAddr, predId)
+					break // first live candidate
+				}
+			} else {
+				// candidate alive but predecessor unknown, still use it
+				n.SetSuccessor(candidate)
+				log.Printf("Stabilize: not in interval, successor set to '%s' (id: '%d')", candidate, KeyToRingId(candidate, ID_SPACE_SIZE))
+				break
+			}
 		}
+	}
+
+	// Update the "current successor" if new successor is set
+	_, currSuccAddr = n.Successor()
+
+	if currSuccAddr == n.Address() {
+		// Skip notify if successor is self
+		return
 	}
 
 	// Notify successor
 	if err := n.transport.Notify(currSuccAddr, n.Address()); err != nil {
-		log.Printf("Stabilize: failed to notify successor %s: %v", currSuccAddr, err)
+		log.Printf("Stabilize: failed to notify successor '%s': %v", currSuccAddr, err)
 	}
 }
 
 func (n *Node) FixFinger(index int) {
 
 	// Work directly with the original finger table
-	n.mu.Lock()
-	entry := n.finger[index]
-	n.mu.Unlock()
+	n.mu.RLock()
+	start := n.finger[index].start
+	currentFingerAddr := n.finger[index].node.address
+	n.mu.RUnlock()
 
 	// Query the ring for the successor to the key
-	successorAddr, err := n.FindSuccessor(entry.start)
+	successorAddr, err := n.FindSuccessor(start)
 	if err != nil {
-		log.Printf("Error finding successor for keyId '%v' from node '%s': %v", entry.start, n.Address(), err)
+		log.Printf("Error finding successor for keyId '%v' from node '%s': %v", start, n.Address(), err)
+		return
+	}
+
+	if successorAddr == n.Address() || successorAddr == currentFingerAddr {
+		// Skip update if successor is self or current finger entry
 		return
 	}
 
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	// Update the finger table entry if new value
-	if successorAddr != entry.node.address {
+	// Update the finger
+	successorId := KeyToRingId(successorAddr, ID_SPACE_SIZE)
+	n.finger[index].node = node{
+		id:      successorId,
+		address: successorAddr,
+	}
 
-		successorId := KeyToRingId(successorAddr, ID_SPACE_SIZE)
+	log.Printf("FixFinger: entry at index %d set to '%s' (id: '%d')", index, successorAddr, successorId)
 
-		n.finger[index].node = node{
-			id:      successorId,
-			address: successorAddr,
-		}
+	if index == M-1 {
+		log.Println("\n", n.String())
 	}
 }
 
@@ -265,8 +301,8 @@ func (n *Node) CheckPredecessor() {
 
 	if !alive {
 		// HANDLE FAILURE
-		// TODO
-		log.Printf("Predecessor '%s' is not alive, handling failure", predAddr)
+		log.Printf("Predecessor '%s' is NOT alive, setting own predecessor to empty", predAddr)
+		n.SetPredecessor("")
 	}
 }
 
@@ -338,8 +374,15 @@ func (n *Node) Notify(suggestedPredecessorAddr string) {
 
 // SetPredecessor updates the predecessor if the suggested node is closer.
 func (n *Node) SetPredecessor(predecessorAddr string) {
+
 	n.mu.Lock()
 	defer n.mu.Unlock()
+
+	if predecessorAddr == "" {
+		n.predecessor = node{}
+		log.Printf("Set own predecessor to empty")
+		return
+	}
 
 	potentialPredecessorId := KeyToRingId(predecessorAddr, ID_SPACE_SIZE)
 
@@ -350,7 +393,7 @@ func (n *Node) SetPredecessor(predecessorAddr string) {
 			id:      potentialPredecessorId,
 			address: predecessorAddr,
 		}
-		log.Printf("Updated predecessor to '%s' (id: '%d')", n.predecessor.address, n.predecessor.id)
+		log.Printf("SetPredecessor to '%s' (id: '%d')", n.predecessor.address, n.predecessor.id)
 	}
 }
 
@@ -363,7 +406,7 @@ func (n *Node) SetSuccessor(successorAddr string) {
 		id:      KeyToRingId(successorAddr, ID_SPACE_SIZE),
 		address: successorAddr,
 	}
-	log.Printf("Updated successor to '%s' (id: '%d')", n.successor.address, n.successor.id)
+	log.Printf("SetSuccessor to '%s' (id: '%d')", n.successor.address, n.successor.id)
 }
 
 // Put puts a key-value pair into the ring
@@ -426,14 +469,56 @@ func (n *Node) FindSuccessor(keyId int) (successor string, err error) {
 		return successorAddr, nil
 	}
 
-	// Search the finger table for the closest preceeding node address
-	_, closestAddr := n.closestPrecedingNode(keyId)
-	if closestAddr == n.Address() {
-		return successorAddr, nil
+	// Search the finger table for the closest preceeding nodes
+	candidates := n.closestPrecedingNodes(keyId)
+	for _, candidate := range candidates {
+		successor, err = n.transport.FindSuccessor(candidate, keyId)
+		if err != nil {
+			log.Printf("Error finding successor for keyId '%v' from node '%s': %v", keyId, candidate, err)
+			continue
+		}
+		return successor, nil
 	}
 
-	// Query the ring for the successor to the key
-	return n.transport.FindSuccessor(closestAddr, keyId)
+	log.Printf("FindSuccessor: all candidates failed, falling back to successor %s", successorAddr)
+	return successorAddr, nil
+
+}
+
+func (n *Node) closestPrecedingNodes(keyId int) (candidates []string) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	for i := len(n.finger) - 1; i >= 0; i-- {
+		fingerId := n.finger[i].node.id
+		if InIntervalOpen(fingerId, n.id, keyId) {
+			candidates = append(candidates, n.finger[i].node.address)
+		}
+	}
+	return candidates
+}
+
+func (n *Node) closestSuccessorNodes() (candidates []string) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	seen := make(map[string]bool)
+
+	// Include immediate successor first
+	if n.successor.address != n.address {
+		candidates = append(candidates, n.successor.address)
+		seen[n.successor.address] = true
+	}
+
+	for _, finger := range n.finger {
+		addr := finger.node.address
+		if addr != n.address && !seen[addr] {
+			candidates = append(candidates, addr)
+			seen[addr] = true
+		}
+	}
+
+	return candidates
 }
 
 func (n *Node) closestPrecedingNode(keyId int) (id int, address string) {
