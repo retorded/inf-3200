@@ -1,7 +1,7 @@
 # Simple Makefile for easier testing
 
 # Number of servers to run
-N=16
+N=32
 
 # Default target
 .PHONY: help
@@ -75,6 +75,12 @@ benchmark: init cleanup build
 			exit 1; \
 		fi; \
 	done
+
+# Benchmark: run dynamic tests for different network sizes. Time 1000 GET and PUT requests in 3 trials.
+.PHONY: benchmark-dynamic
+benchmark-dynamic: init cleanup build
+	@chmod +x run.sh
+	@./run.sh benchmark-dynamic $N
 
 # Create deliverable zip file with proper folder structure
 .PHONY: deliverable

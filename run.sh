@@ -124,7 +124,7 @@ deploy() {
     
 
     # Convert network array to comma-separated string for PUT requests
-    NETWORK_STR=$(IFS=','; echo "${NETWORK[*]}")
+    #NETWORK_STR=$(IFS=','; echo "${NETWORK[*]}")
 
     # # Initialize the ring network by sending PUT requests to all nodes
     # echo "Initializing ring network..."
@@ -146,8 +146,8 @@ deploy() {
     echo "Deployment complete! Started $NUM_SERVERS servers."
     #printf '%s\n' "${NETWORK[@]}" | jq -R . | jq -s -c .
     echo "Network: ${NETWORK[*]}"
-    echo "Testing ring..."
-    python3 network-experiment.py "${NETWORK[@]}"
+    # python3 network-experiment.py "${NETWORK[@]}"
+    python3 chord-dynamic-benchmark.py "${NETWORK[@]}"
 }
 
 leave() {
@@ -194,7 +194,7 @@ kill() {
     echo "All servers killed and servers.json removed."
 }
 
-benchmark() {
+benchmark-throughput() {
     local operations=${1:-1000}
     local trials=${2:-3}
 
@@ -245,6 +245,43 @@ benchmark() {
     done
 }
 
+
+benchmark-dynamic() {
+
+    echo "Starting dynamic benchmark for $NUM_SERVERS nodes..."
+
+    # Ensure output directory exists
+    mkdir -p "$OUTPUT_DIR"
+    
+    # Start network
+    deploy
+
+    sleep 2
+    
+    # Get all nodes from JSON file for distribution of test requests
+    if [[ -f "$JSON_FILE" ]]; then
+        # Get all server addresses from JSON file
+        servers=$(jq -r '.[]' "$JSON_FILE" | tr '\n' ',' | sed 's/,$//')
+
+        # Run benchmark with all servers
+        if python3 chord-dynamicbenchmark.py \
+            --network "$servers"; then
+            echo "Dynamic benchmark completed successfully"
+        else 
+            echo "Dynamic benchmark failed with errors - stopping entire benchmark"
+            echo "Logs preserved in: $LOG_DIR"
+            echo " Check server logs for details:"
+            exit 1  
+        fi
+    else
+        echo "ERROR: servers.json not found"
+        continue
+    fi  
+
+    # Cleanup servers and logs between trials
+    cleanup
+}
+
 # Main execution
 if [[ "$COMMAND" == "kill" ]]; then
     kill
@@ -254,11 +291,15 @@ elif [[ "$COMMAND" == "cleanup" ]]; then
     cleanup
 elif [[ "$COMMAND" == "build" ]]; then
     build
-elif [[ "$COMMAND" == "benchmark" ]]; then
+elif [[ "$COMMAND" == "benchmark-throughput" ]]; then
     NUM_SERVERS=$2
     operations=${3:-1000}
     trials=${4:-3}
     benchmark $operations $trials
+elif [[ "$COMMAND" == "benchmark-dynamic" ]]; then
+    NUM_SERVERS=$2
+    trials=${4:-3}
+    benchmark-dynamic 
 elif [[ -n "$COMMAND" ]] && [[ "$COMMAND" =~ ^[0-9]+$ ]]; then
     NUM_SERVERS=$COMMAND
     init

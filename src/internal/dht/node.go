@@ -148,9 +148,9 @@ func (n *Node) SetTransport(transport Transport) {
 
 // RunMaintenance runs the maintenance goroutines for the node at regular intervals.
 func (n *Node) RunMaintenance(ctx context.Context) {
-	stabilizeTicker := time.NewTicker(time.Duration(500) * time.Millisecond)
-	fixFingerTicker := time.NewTicker(time.Duration(500) * time.Millisecond)
-	checkPredTicker := time.NewTicker(time.Duration(1000) * time.Millisecond)
+	stabilizeTicker := time.NewTicker(time.Duration(100) * time.Millisecond)
+	fixFingerTicker := time.NewTicker(time.Duration(200) * time.Millisecond)
+	checkPredTicker := time.NewTicker(time.Duration(300) * time.Millisecond)
 
 	defer func() {
 		stabilizeTicker.Stop()
