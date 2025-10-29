@@ -11,8 +11,8 @@ type Transport interface {
 	SetSuccessor(targetAddr string, successor string) error                   // RPC to instruct the node at the given address that has a new successor
 	FindSuccessor(targetAddr string, keyId int) (successor string, err error) // RPC to find the successor of the key
 
-	// Crash handling
-	IsCrashed() bool
+	// Inactive handling
+	IsInactive() bool
 }
 
 type INode interface {

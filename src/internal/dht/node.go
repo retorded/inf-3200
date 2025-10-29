@@ -166,18 +166,18 @@ func (n *Node) RunMaintenance(ctx context.Context) {
 			return
 
 		case <-stabilizeTicker.C:
-			if !n.transport.IsCrashed() {
+			if !n.transport.IsInactive() {
 				go n.Stabilize()
 			}
 
 		case <-fixFingerTicker.C:
-			if !n.transport.IsCrashed() {
+			if !n.transport.IsInactive() {
 				go n.FixFinger(nextFingerIndex)
 				nextFingerIndex = (nextFingerIndex + 1) % M
 			}
 
 		case <-checkPredTicker.C:
-			if !n.transport.IsCrashed() {
+			if !n.transport.IsInactive() {
 				go n.CheckPredecessor()
 			}
 		}
@@ -206,25 +206,29 @@ func (n *Node) Stabilize() {
 
 		for _, candidate := range candidates {
 			predAddr, err := n.transport.GetPredecessor(candidate)
-			log.Printf("Stabilize: got predecessor '%s' from candidate '%s'", predAddr, candidate)
 			if err != nil {
 				log.Printf("Stabilize WARNING: failed to get predecessor from candidate successor '%s': %v", candidate, err)
 				log.Println("Stabilize: candidates list", candidates)
 				continue
 			}
 
-			if predAddr != "" && predAddr != n.Address() {
-				predId := KeyToRingId(predAddr, ID_SPACE_SIZE)
-				currSuccId, _ = n.Successor() // refresh
-				if InIntervalOpen(predId, n.Id(), currSuccId) {
-					n.SetSuccessor(predAddr)
-					log.Printf("Stabilize: in interval, successor set to '%s' (id: '%d')", predAddr, predId)
-					break // first live candidate
-				}
-			} else {
-				// candidate alive but predecessor unknown, still use it
+			if predAddr == "" {
+				// candidate alive but predecessor unknown, keep it
+				log.Printf("Stabilize: candidate '%s' has no predecessor, keeping as successor", candidate)
 				n.SetSuccessor(candidate)
-				log.Printf("Stabilize: not in interval, successor set to '%s' (id: '%d')", candidate, KeyToRingId(candidate, ID_SPACE_SIZE))
+				break
+			}
+
+			if predAddr == n.Address() {
+				// successor’s predecessor is self — stable
+				break
+			}
+
+			predId := KeyToRingId(predAddr, ID_SPACE_SIZE)
+			currSuccId, _ = n.Successor()
+			if InIntervalOpen(predId, n.Id(), currSuccId) {
+				log.Printf("Stabilize: in interval, successor updated to '%s' (id: '%d')", predAddr, predId)
+				n.SetSuccessor(predAddr)
 				break
 			}
 		}
@@ -240,7 +244,7 @@ func (n *Node) Stabilize() {
 
 	// Notify successor
 	if err := n.transport.Notify(currSuccAddr, n.Address()); err != nil {
-		log.Printf("Stabilize: failed to notify successor '%s': %v", currSuccAddr, err)
+		log.Printf("Stabilize: FAILED to notify successor '%s': %v", currSuccAddr, err)
 	}
 }
 
@@ -259,8 +263,13 @@ func (n *Node) FixFinger(index int) {
 		return
 	}
 
-	if successorAddr == n.Address() || successorAddr == currentFingerAddr {
-		// Skip update if successor is self or current finger entry
+	if successorAddr == n.Address() {
+		// Skip update if successor is self
+		return
+	}
+
+	if successorAddr == currentFingerAddr {
+		// Skip update if no change in current finger entry
 		return
 	}
 
@@ -474,7 +483,7 @@ func (n *Node) FindSuccessor(keyId int) (successor string, err error) {
 	for _, candidate := range candidates {
 		successor, err = n.transport.FindSuccessor(candidate, keyId)
 		if err != nil {
-			log.Printf("Error finding successor for keyId '%v' from node '%s': %v", keyId, candidate, err)
+			log.Printf("FindSuccessor ERROR finding successor for keyId '%v' from node '%s': %v", keyId, candidate, err)
 			continue
 		}
 		return successor, nil

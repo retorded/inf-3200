@@ -18,7 +18,7 @@ type HTTPTransport struct {
 	node    dht.INode
 	server  *http.Server
 	address string
-	crash   bool
+	inactive   bool
 }
 
 // New creates a new server instance
@@ -58,14 +58,14 @@ func New(hostname string, port string, node dht.INode) (*HTTPTransport, error) {
 // crashMiddleware wraps the entire mux to check crash status
 func (t *HTTPTransport) crashMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Allow sim-recover even when crashed
+		// Allow sim-recover even when inactive
 		if r.URL.Path == "/sim-recover" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Refuse all other requests if crashed
-		if t.crash {
+		// Refuse all other requests if inactive
+		if t.inactive {
 			refuseRequest(w, r)
 			return
 		}
@@ -272,6 +272,6 @@ func (t *HTTPTransport) FindSuccessor(addr string, keyId int) (successor string,
 	return successor, nil
 }
 
-func (t *HTTPTransport) IsCrashed() bool {
-	return t.crash
+func (t *HTTPTransport) IsInactive() bool {
+	return t.inactive
 }

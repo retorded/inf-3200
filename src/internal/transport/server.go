@@ -322,12 +322,16 @@ func (t *HTTPTransport) handleLeave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Implement leave logic
+	// Make the node "plug" the hole
 	err := t.node.Leave()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to leave: %v", err), http.StatusInternalServerError)
 		return
 	}
+
+	// Set the node to inactive so it stops processing requests.
+	// Other nodes will update their finger table and successor accordingly when they cannot reach the node.
+	t.inactive = true
 
 	log.Println("SERVER: Leave request received")
 	w.WriteHeader(http.StatusOK)
@@ -341,7 +345,7 @@ func (t *HTTPTransport) handleSimCrash(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t.crash = true
+	t.inactive = true
 	w.WriteHeader(http.StatusOK)
 	log.Println("Sim crash request received")
 }
@@ -354,7 +358,7 @@ func (t *HTTPTransport) handleSimRecover(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	t.crash = false
+	t.inactive = false
 	w.WriteHeader(http.StatusOK)
 	log.Println("Sim recover request received")
 }

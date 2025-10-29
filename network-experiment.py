@@ -164,7 +164,8 @@ if len(available_nodes) > 1:
         if ring:
             print("SUCCESS: Ring stabilized after crash!")
             for node in ring:
-                print(f"Node:{node['hash']}--> {node['address']}")
+                print(f"{node['hash']} ({node['address']}) --> {node['successor']}")
+            
         else:
             print("ERROR: Ring failed to stabilize after crash")
             print("Skipping recovery test due to crash stabilization failure")
