@@ -53,6 +53,7 @@ func (t *HTTPTransport) handleSuccessor(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 
+		log.Printf("Transport: SetSuccessor to '%s'", successor)
 		t.node.SetSuccessor(successor)
 
 		// Send response confirming the update
@@ -306,10 +307,13 @@ func (t *HTTPTransport) handleJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("SERVER: Successor address found = %s", successorAddress)
+	log.Printf("SERVER: Successor address found = '%s', setting as successor", successorAddress)
 
 	// Set the successor of the node. The maintenance goroutine will update the successor of the node.
 	t.node.SetSuccessor(successorAddress)
+
+	// Set the node to active so it starts processing requests.
+	t.inactive = false
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -322,18 +326,18 @@ func (t *HTTPTransport) handleLeave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Make the node "plug" the hole
+	log.Println("SERVER: Leave request received")
+
+	// Immedately stop processing requests.
+	t.inactive = true
+
+	// Make the node "plug" the hole in the ring and return to starting state.
 	err := t.node.Leave()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to leave: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Set the node to inactive so it stops processing requests.
-	// Other nodes will update their finger table and successor accordingly when they cannot reach the node.
-	t.inactive = true
-
-	log.Println("SERVER: Leave request received")
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -360,7 +364,7 @@ func (t *HTTPTransport) handleSimRecover(w http.ResponseWriter, r *http.Request)
 
 	t.inactive = false
 	w.WriteHeader(http.StatusOK)
-	log.Println("Sim recover request received")
+	log.Println("SERVER: Recovery request received")
 }
 
 // HELPER
@@ -409,10 +413,4 @@ func forwardRequest(w http.ResponseWriter, method, url string, body []byte) {
 // refuseRequest returns a 503 Service Unavailable response
 func refuseRequest(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "service unavailable", http.StatusServiceUnavailable)
-}
-
-// isServerError checks if the response indicates a server error (500/503)
-func isServerError(resp *http.Response) bool {
-	return resp.StatusCode == http.StatusInternalServerError || 
-		   resp.StatusCode == http.StatusServiceUnavailable
 }

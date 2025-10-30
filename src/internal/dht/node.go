@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
 	"sort"
 	"sync"
 	"time"
@@ -148,14 +149,11 @@ func (n *Node) SetTransport(transport Transport) {
 
 // RunMaintenance runs the maintenance goroutines for the node at regular intervals.
 func (n *Node) RunMaintenance(ctx context.Context) {
-	stabilizeTicker := time.NewTicker(time.Duration(100) * time.Millisecond)
-	fixFingerTicker := time.NewTicker(time.Duration(200) * time.Millisecond)
-	checkPredTicker := time.NewTicker(time.Duration(300) * time.Millisecond)
+	maintenanceInterval := 100*time.Millisecond + time.Duration(rand.Intn(50))*time.Millisecond
+	maintenanceTicker := time.NewTicker(maintenanceInterval)
 
 	defer func() {
-		stabilizeTicker.Stop()
-		fixFingerTicker.Stop()
-		checkPredTicker.Stop()
+		maintenanceTicker.Stop()
 	}()
 
 	nextFingerIndex := 0
@@ -165,20 +163,18 @@ func (n *Node) RunMaintenance(ctx context.Context) {
 		case <-ctx.Done():
 			return
 
-		case <-stabilizeTicker.C:
+		case <-maintenanceTicker.C:
 			if !n.transport.IsInactive() {
-				go n.Stabilize()
-			}
 
-		case <-fixFingerTicker.C:
-			if !n.transport.IsInactive() {
-				go n.FixFinger(nextFingerIndex)
+				// Check if predecessor is alive, set to empty if not
+				n.CheckPredecessor()
+
+				// Verify and update successor/predecessor links; detect node joins.
+				n.Stabilize()
+
+				// Fix finger table entries
+				n.FixFinger(nextFingerIndex)
 				nextFingerIndex = (nextFingerIndex + 1) % M
-			}
-
-		case <-checkPredTicker.C:
-			if !n.transport.IsInactive() {
-				go n.CheckPredecessor()
 			}
 		}
 	}
@@ -191,20 +187,24 @@ func (n *Node) Stabilize() {
 
 	currSuccId, currSuccAddr := n.Successor()
 
-	// If successor is self, we already know its predecessor locally
+	// If successor is self, we already know predecessor locally
 	if currSuccAddr == n.Address() {
 		_, predAddr := n.Predecessor() // helper to return n.predecessor.address
 		if predAddr != "" && predAddr != n.Address() {
 			predId := KeyToRingId(predAddr, ID_SPACE_SIZE)
 			if InIntervalOpen(predId, n.Id(), currSuccId) {
+				log.Printf("Stabilize: successor is self, own predecessor is in interval, successor updated to '%s' (id: '%d')", predAddr, predId)
 				n.SetSuccessor(predAddr)
 			}
 		}
 	} else {
 		// successor is another node — fetch its predecessor over transport
 		candidates := n.closestSuccessorNodes()
+		liveCandidateExists := false
 
+		// candidates is a list of closest successor nodes to the key, deduplicated
 		for _, candidate := range candidates {
+
 			predAddr, err := n.transport.GetPredecessor(candidate)
 			if err != nil {
 				log.Printf("Stabilize WARNING: failed to get predecessor from candidate successor '%s': %v", candidate, err)
@@ -214,23 +214,35 @@ func (n *Node) Stabilize() {
 
 			if predAddr == "" {
 				// candidate alive but predecessor unknown, keep it
-				log.Printf("Stabilize: candidate '%s' has no predecessor, keeping as successor", candidate)
+				log.Printf("Stabilize: candidate '%s' has no predecessor, setting as successor", candidate)
 				n.SetSuccessor(candidate)
+				liveCandidateExists = true
 				break
 			}
 
 			if predAddr == n.Address() {
 				// successor’s predecessor is self — stable
+				liveCandidateExists = true
 				break
 			}
+
+			liveCandidateExists = true
 
 			predId := KeyToRingId(predAddr, ID_SPACE_SIZE)
 			currSuccId, _ = n.Successor()
 			if InIntervalOpen(predId, n.Id(), currSuccId) {
-				log.Printf("Stabilize: in interval, successor updated to '%s' (id: '%d')", predAddr, predId)
+				log.Printf("Stabilize: successor's (id: '%d') predecessor '%s' (id: '%d') is in interval, updating successor to '%s' (id: '%d')", currSuccId, predAddr, predId, predAddr, predId)
 				n.SetSuccessor(predAddr)
 				break
 			}
+
+			log.Printf("Stabilize: successor's predecessor '%s' (id: '%d') not in interval (predId: '%d', currSuccId: '%d')", predAddr, predId, n.Id(), currSuccId)
+		}
+
+		if !liveCandidateExists {
+			// No successor found, set ourselves as the successor
+			log.Printf("Stabilize: no live successor found, setting ourselves as the successor")
+			n.SetSuccessor(n.Address())
 		}
 	}
 
@@ -259,7 +271,9 @@ func (n *Node) FixFinger(index int) {
 	// Query the ring for the successor to the key
 	successorAddr, err := n.FindSuccessor(start)
 	if err != nil {
-		log.Printf("Error finding successor for keyId '%v' from node '%s': %v", start, n.Address(), err)
+		log.Printf("FixFinger ERROR: %v", err)
+		// Treat as failed node
+		n.removeFailedFinger(currentFingerAddr)
 		return
 	}
 
@@ -303,13 +317,7 @@ func (n *Node) CheckPredecessor() {
 
 	// Check if the predecessor is still alive
 	alive, err := n.transport.CheckAlive(predAddr)
-	if err != nil {
-		log.Printf("Error checking if predecessor '%s' is alive: %v", predAddr, err)
-		return
-	}
-
-	if !alive {
-		// HANDLE FAILURE
+	if !alive || err != nil {
 		log.Printf("Predecessor '%s' is NOT alive, setting own predecessor to empty", predAddr)
 		n.SetPredecessor("")
 	}
@@ -319,16 +327,20 @@ func (n *Node) Leave() error {
 	// Notify the successor that the node is leaving, and update the successor to the predecessor
 	successorId, successorAddr := n.Successor()
 	predecessorId, predecessorAddr := n.Predecessor()
-	if err := n.transport.SetPredecessor(successorAddr, predecessorAddr); err != nil {
-		return fmt.Errorf("failed to notify successor %s: %v", successorAddr, err)
-	}
-	// Notify the predecessor that its new successor is the successor of the node
-	if err := n.transport.SetSuccessor(predecessorAddr, successorAddr); err != nil {
-		return fmt.Errorf("failed to notify predecessor %s: %v", predecessorAddr, err)
+
+	log.Printf("Leaving ring, connecting predecessor '%s' (id: '%d') to successor '%s' (id: '%d')", predecessorAddr, predecessorId, successorAddr, successorId)
+
+	if successorAddr != "" {
+		if err := n.transport.SetPredecessor(successorAddr, predecessorAddr); err != nil {
+			log.Printf("Leave:failed to notify successor of predecessor '%s': %v", successorAddr, err)
+		}
 	}
 
-	log.Printf("Node '%s' (id: '%d') is leaving", n.Address(), n.Id())
-	log.Printf("Closed the ring by connecting predecessor '%s' (id: '%d') to successor '%s' (id: '%d')", predecessorAddr, predecessorId, successorAddr, successorId)
+	if predecessorAddr != "" {
+		if err := n.transport.SetSuccessor(predecessorAddr, successorAddr); err != nil {
+			log.Printf("Leave:failed to notify predecessor of successor '%s': %v", predecessorAddr, err)
+		}
+	}
 
 	// Reset to starting state
 	n.resetToStartingState()
@@ -377,6 +389,7 @@ func (n *Node) Notify(suggestedPredecessorAddr string) {
 
 	// Accept if predecessor is empty OR in (predecessor, self]
 	if currentPredecessorAddr == "" || InIntervalRightInclusive(suggestedPredecessorId, n.predecessor.id, n.id) {
+		log.Printf("Notify: accepted suggested predecessor '%s' (id: '%d')", suggestedPredecessorAddr, suggestedPredecessorId)
 		n.SetPredecessor(suggestedPredecessorAddr)
 	}
 }
@@ -389,7 +402,7 @@ func (n *Node) SetPredecessor(predecessorAddr string) {
 
 	if predecessorAddr == "" {
 		n.predecessor = node{}
-		log.Printf("Set own predecessor to empty")
+		log.Printf("SetPredecessor to empty")
 		return
 	}
 
@@ -483,13 +496,13 @@ func (n *Node) FindSuccessor(keyId int) (successor string, err error) {
 	for _, candidate := range candidates {
 		successor, err = n.transport.FindSuccessor(candidate, keyId)
 		if err != nil {
-			log.Printf("FindSuccessor ERROR finding successor for keyId '%v' from node '%s': %v", keyId, candidate, err)
+			log.Printf("FindSuccessor ERROR: %v", err)
 			continue
 		}
 		return successor, nil
 	}
 
-	log.Printf("FindSuccessor: all candidates failed, falling back to successor %s", successorAddr)
+	log.Printf("FindSuccessor: all candidates failed (candidates: %v), falling back to own successor '%s'", candidates, successorAddr)
 	return successorAddr, nil
 
 }
@@ -507,6 +520,8 @@ func (n *Node) closestPrecedingNodes(keyId int) (candidates []string) {
 	return candidates
 }
 
+// closestSuccessorNodes returns the closest successor nodes to the key
+// deduplicates the list of candidates, preserving the order of the original finger table
 func (n *Node) closestSuccessorNodes() (candidates []string) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
@@ -570,24 +585,69 @@ func (n *Node) FingerTable() []string {
 
 // HELPER
 
+// Helper function to remove a failed node from the finger table and replace with the subsequent node
+func (n *Node) removeFailedFinger(failedAddr string) {
+
+	// Get the next suitable successor from the finger table (assume this is live)
+	nextSuccessorAddr := ""
+	candidates := n.closestSuccessorNodes()
+	for _, candidate := range candidates {
+		if candidate == failedAddr {
+			continue
+		}
+		nextSuccessorAddr = candidate
+		break
+	}
+
+	if nextSuccessorAddr == "" {
+		// No next successor found, set ourselves as the successor to keep a live node in the finger table entry
+		nextSuccessorAddr = n.Address()
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	// Remove dead node from finger table and replace with live node
+	for i, entry := range n.finger {
+		if entry.node.address == failedAddr {
+			n.finger[i].node = node{
+				id:      KeyToRingId(nextSuccessorAddr, ID_SPACE_SIZE),
+				address: nextSuccessorAddr,
+			}
+		}
+	}
+}
+
 func (n *Node) resetToStartingState() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	n.successor = node{
+	self := node{
 		id:      n.id,
 		address: n.address,
 	}
+
+	// Set successor to self, predecessor to empty
+	n.successor = self
 	n.predecessor = node{}
 
-	finger := make([]fingerEntry, M)
-
-	// Initialize finger table with self
+	// Reset all finger table entries to self
 	for i := 0; i < M; i++ {
-		fingerKey := (n.id + (1 << i)) % ID_SPACE_SIZE
-		finger[i] = fingerEntry{
-			start: fingerKey,
-			node:  n.node,
+		n.finger[i] = fingerEntry{
+			node: self,
 		}
 	}
+
+	log.Printf("ResetToStartingState: node is now %s", n.String())
+}
+
+// TODO: wrap FindSuccessor, GetPredecessor, Notify, in this function
+func retry(operation func() error, maxRetries int) error {
+	for i := 0; i < maxRetries; i++ {
+		if err := operation(); err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(i*i) * 50 * time.Millisecond) // quadratic backoff
+	}
+	return fmt.Errorf("operation failed after %d retries", maxRetries)
 }

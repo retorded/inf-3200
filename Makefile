@@ -57,6 +57,11 @@ test: run
 		exit 1; \
 	fi
 
+.PHONY: 
+reset:
+	@chmod +x run.sh
+	@./run.sh reset
+
 # Kill all running servers
 .PHONY: kill
 kill:
@@ -64,8 +69,8 @@ kill:
 	@./run.sh kill
 
 # Benchmark: run throughput tests for different network sizes. Time 1000 GET and PUT requests in 3 trials.
-.PHONY: benchmark
-benchmark: init cleanup build
+.PHONY: benchmark-throughput
+benchmark-throughput: init cleanup build
 	@chmod +x run.sh
 	@for size in 16 8 4 2 1; do \
 		echo "Testing network size: $$size"; \
@@ -78,7 +83,7 @@ benchmark: init cleanup build
 
 # Benchmark: run dynamic tests for different network sizes. Time 1000 GET and PUT requests in 3 trials.
 .PHONY: benchmark-dynamic
-benchmark-dynamic: init cleanup build
+benchmark-dynamic:
 	@chmod +x run.sh
 	@./run.sh benchmark-dynamic $N
 

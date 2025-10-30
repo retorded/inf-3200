@@ -146,11 +146,9 @@ deploy() {
     echo "Deployment complete! Started $NUM_SERVERS servers."
     #printf '%s\n' "${NETWORK[@]}" | jq -R . | jq -s -c .
     echo "Network: ${NETWORK[*]}"
-    # python3 network-experiment.py "${NETWORK[@]}"
-    python3 chord-dynamic-benchmark.py "${NETWORK[@]}"
 }
 
-leave() {
+reset() {
     # Sending leave request to all nodes in json file
     if [[ ! -f "$JSON_FILE" ]]; then
         echo "No servers.json found. Nothing to kill."
@@ -164,11 +162,19 @@ leave() {
         HOST="${HOSTPORT%%:*}"
         PORT="${HOSTPORT##*:}"
 
-        # Kill any server process matching the binary name and port
+        # Leave the ring
         curl -X POST "http://$HOST:$PORT/leave"
     done
 
-    echo "All nodes left the ring."
+    for HOSTPORT in "${HOST_PORTS[@]}"; do
+        HOST="${HOSTPORT%%:*}"
+        PORT="${HOSTPORT##*:}"
+
+        # Recover node so it can start processing requests again
+        curl -X POST "http://$HOST:$PORT/sim-recover"
+    done
+
+    echo "All nodes left the ring and recovered."
 }
 
 # Kill function - kills all running servers
@@ -222,7 +228,7 @@ benchmark-throughput() {
             servers=$(jq -r '.[]' "$JSON_FILE" | tr '\n' ',' | sed 's/,$//')
             
             # Run benchmark with all servers
-            if python3 chord-benchmark.py \
+            if python3 chord-throughput-benchmark.py \
                 --network-size $NUM_SERVERS \
                 --trial $trial \
                 --operations $operations \
@@ -252,20 +258,16 @@ benchmark-dynamic() {
 
     # Ensure output directory exists
     mkdir -p "$OUTPUT_DIR"
-    
-    # Start network
-    deploy
 
     sleep 2
     
     # Get all nodes from JSON file for distribution of test requests
     if [[ -f "$JSON_FILE" ]]; then
         # Get all server addresses from JSON file
-        servers=$(jq -r '.[]' "$JSON_FILE" | tr '\n' ',' | sed 's/,$//')
+        mapfile -t SERVERS < <(jq -r '.[]' "$JSON_FILE")
 
         # Run benchmark with all servers
-        if python3 chord-dynamicbenchmark.py \
-            --network "$servers"; then
+        if python3 chord-dynamic-benchmark.py "${SERVERS[@]}"; then
             echo "Dynamic benchmark completed successfully"
         else 
             echo "Dynamic benchmark failed with errors - stopping entire benchmark"
@@ -277,9 +279,6 @@ benchmark-dynamic() {
         echo "ERROR: servers.json not found"
         continue
     fi  
-
-    # Cleanup servers and logs between trials
-    cleanup
 }
 
 # Main execution
@@ -291,14 +290,15 @@ elif [[ "$COMMAND" == "cleanup" ]]; then
     cleanup
 elif [[ "$COMMAND" == "build" ]]; then
     build
+elif [[ "$COMMAND" == "reset" ]]; then
+    reset
 elif [[ "$COMMAND" == "benchmark-throughput" ]]; then
     NUM_SERVERS=$2
     operations=${3:-1000}
     trials=${4:-3}
-    benchmark $operations $trials
+    benchmark-throughput $operations $trials
 elif [[ "$COMMAND" == "benchmark-dynamic" ]]; then
     NUM_SERVERS=$2
-    trials=${4:-3}
     benchmark-dynamic 
 elif [[ -n "$COMMAND" ]] && [[ "$COMMAND" =~ ^[0-9]+$ ]]; then
     NUM_SERVERS=$COMMAND
