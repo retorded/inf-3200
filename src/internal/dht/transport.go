@@ -16,7 +16,6 @@ type Transport interface {
 }
 
 type INode interface {
-	SetNetwork(network []string)
 	SetTransport(transport Transport)
 	RunMaintenance(ctx context.Context)
 
