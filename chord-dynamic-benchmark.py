@@ -62,15 +62,14 @@ def recover_node(node):
 
 def get_info(node):
     ok, data = _get_json(f"http://{node}/node-info")
-    return data if ok else None
+    return data if ok else None    
 
 def reset_network(nodes):
-    for node in nodes:
-        # Leave the ring, reset to empty state, and stop processing requests
-        leave_ring(node)
-
+    # Recover failed nodes so they can process the leave request
     for node in nodes:
         # Recover the node so it can start processing requests again
+        recover_node(node)
+        leave_ring(node)
         recover_node(node)
 
 def traverse_ring(start_node):
@@ -95,13 +94,18 @@ def wait_for_ring_stabilization(start_node, expected_count, timeout=STABILIZATIO
     while time.time() - start_time < timeout:
         ring = traverse_ring(start_node)
         if len(ring) == expected_count:
-            return True
+            return True, ring
         time.sleep(STABILIZATION_CHECK_INTERVAL)
 
     print(f"Ring failed to stabilize: {len(ring)} != {expected_count}")
-    for node in ring:
-        print(f"-- Node: {node['address']} ({node['id']}) --> {node['successor']}")
-    return False
+    return False, ring
+
+def join_nodes(nodes):
+    """Create a network of nodes by joining them in a ring."""
+    base_node = nodes[0]
+    for node in nodes[1:]:
+        join_ring(node, base_node)
+        time.sleep(0.2) 
 
 # ======================
 # EXPERIMENT HELPERS
@@ -123,49 +127,42 @@ def log_result(writer, experiment, n_start, n_end, mode, duration, trial):
 def experiment_grow(writer, all_nodes, mode="sequential"):
     """Measure time to grow network from 1 --> N nodes."""
 
-    if len(all_nodes) < 32:
-        print("Not enough nodes to run grow experiment.")
-        print(f"All nodes: len={len(all_nodes)}")
-        sys.exit(1)
+    
 
     for n in [2, 4, 8, 16, 32]:
+
+        if len(all_nodes) < n:
+            print("Not enough nodes to run grow experiment.")
+            print(f"All nodes: len={len(all_nodes)}")
+            sys.exit(1)
 
         for trial in range(1, REPEATS_PER_EXPERIMENT + 1):
             print(f"\n==== Grow Trial {trial} ====")
             
             print(f"[Grow] From 1 to {n} nodes ({mode} mode)")
 
-            start_node = random.choice(all_nodes)
+            participating_nodes = random.sample(all_nodes, n)
 
             # Start timing
             start_time = time.time()
 
             # Join nodes
-            candidate_nodes = [node for node in all_nodes if node != start_node]
-            joining_nodes = random.sample(candidate_nodes, n - 1)
-            if mode == "sequential":
-                for node in joining_nodes:
-                    join_ring(node, start_node)
-                    
-                # TODO: Implement burst mode
+            join_nodes(participating_nodes)
 
             # Wait for stabilization
-            stabilized = wait_for_ring_stabilization(start_node, n)
+            stabilized, ring = wait_for_ring_stabilization(participating_nodes[0], n)
             duration = time.time() - start_time
 
             log_result(writer, "grow", 1, n, mode, duration, trial)
             print(f"[Grow] {n} nodes stabilized in {duration:.2f}s (ok={stabilized})\n")
 
-            # Reset all participating nodes in network to a single-node state
-            participating_nodes = [start_node] + joining_nodes
-
             if not stabilized:
                 print(f"[Grow] {n} nodes failed to stabilize, stopping experiment")
-                expected_ring = [start_node] + joining_nodes
-                print(f"Expected ring: {expected_ring}")
-                #reset_network(participating_nodes)
+                print(f"Partial ring: {ring}")
+                reset_network(participating_nodes)
                 sys.exit(1)
 
+            sys.exit(0) # DEBUG
             
             reset_network(participating_nodes)
 
@@ -174,22 +171,20 @@ def experiment_shrink(writer, all_nodes, mode="sequential"):
 
     for n in [32, 16, 8, 4, 2]:
         n_end = n // 2
+        participating_nodes = all_nodes[:n]
 
         for trial in range(1, REPEATS_PER_EXPERIMENT + 1):
             print(f"\n\n==== Shrink Trial {trial} ====")
             print(f"[Shrink] From {n} to {n_end} nodes ({mode} mode)")
 
-            # Determine nodes that will leave
-            participating_nodes = all_nodes[:n]
-
-            # Join all participating nodes to the ring
-            for node in participating_nodes:
-                join_ring(node, participating_nodes[0])
+            join_nodes(participating_nodes)
 
             # Wait for stabilization
-            stabilized = wait_for_ring_stabilization(participating_nodes[0], n)
+            stabilized, ring = wait_for_ring_stabilization(participating_nodes[0], n)
             if not stabilized:
                 print(f"[Shrink] {n} nodes failed to join, stopping experiment")
+                for node in ring:
+                    print(f"-- {node['id']} ({node['address']}) --> {node['successor']}")
                 sys.exit(1)
 
             leaving_nodes = random.sample(participating_nodes, n - n_end)
@@ -211,7 +206,7 @@ def experiment_shrink(writer, all_nodes, mode="sequential"):
                 raise ValueError(f"Unknown mode: {mode}")
 
             # Wait for stabilization
-            stabilized = wait_for_ring_stabilization(start_node, n_end)
+            stabilized, ring = wait_for_ring_stabilization(start_node, n_end)
             duration = time.time() - start_time
 
             log_result(writer, "shrink", n, n_end, mode, duration, trial)
@@ -221,6 +216,9 @@ def experiment_shrink(writer, all_nodes, mode="sequential"):
                 print(f"[Shrink] {n}->{n_end} failed to stabilize, stopping experiment")
                 expected_ring = [start_node] + remaining_nodes
                 print(f"Expected ring: {expected_ring}")
+                print(f"Partial ring:")
+                for node in ring:
+                    print(f"-- {node['id']} ({node['address']}) --> {node['successor']}")
                 sys.exit(1)
 
             # Reset all nodes involved back to single-node state
@@ -236,26 +234,28 @@ def experiment_crash_tolerance(writer, all_nodes, mode="sequential"):
     # Always start with full stable network
     participating_nodes = all_nodes[:32]
 
-    for burst_size in range(1, 31):  # crash bursts
-
+    #for burst_size in range(1, 31):  # crash bursts
+    for burst_size in [1, 2, 4, 8, 16, 32]:
         for trial in range(1, REPEATS_PER_EXPERIMENT + 1):
             print(f"\n==== Crash Tolerance Trial {trial}, burst={burst_size} ====")
 
             # Join all participating nodes to the ring
-            for node in participating_nodes:
-                join_ring(node, participating_nodes[0])
+            join_nodes(participating_nodes)
 
             # Wait for stabilization
-            stabilized = wait_for_ring_stabilization(participating_nodes[0], len(participating_nodes))
+            stabilized, full_ring = wait_for_ring_stabilization(participating_nodes[1], len(participating_nodes))
             if not stabilized:
                 print(f"[Crash Tolerance] {len(participating_nodes)} nodes failed to join, stopping experiment")
+                print(f"Partial ring: {full_ring}")
                 sys.exit(1)
+
+            print(f"Time check at stable ring: {time.time()}")
             
-            # Pick nodes to crash (excluding base_node)
-            #base_node = random.choice(start_nodes)
+            # Pick nodes to crash
             crashing_nodes = random.sample(participating_nodes, burst_size)
             living_nodes = [n for n in participating_nodes if n not in crashing_nodes]
-            base_node = random.choice(living_nodes)
+
+            time.sleep(3) # Wait for finger tables to stabilize before crashing nodes
 
             start_time = time.time()
 
@@ -263,24 +263,48 @@ def experiment_crash_tolerance(writer, all_nodes, mode="sequential"):
             if mode == "sequential":
                 for node in crashing_nodes:
                     crash_node(node)
-            elif mode == "burst":
-                # TODO: Implement burst mode
-                pass
             else:
                 raise ValueError(f"Unknown mode: {mode}")
 
             # Wait for network stabilization around remaining nodes
             expected_remaining = len(living_nodes)
-            stabilized = wait_for_ring_stabilization(base_node, expected_remaining)
+            stabilized, ring = wait_for_ring_stabilization(living_nodes[0], expected_remaining)
             duration = time.time() - start_time
 
-            log_result(writer, "crash_tolerance", len(participating_nodes), expected_remaining,
-                       f"burst_{burst_size}", duration, trial)
+            log_result(writer, "crash_tolerance", len(participating_nodes), expected_remaining, f"burst_{burst_size}", duration, trial)
             print(f"[Crash] Burst={burst_size} stabilized in {duration:.2f}s (ok={stabilized})")
+
+            if not stabilized:
+                print(f"[Crash Tolerance] {len(participating_nodes)}->{expected_remaining} failed to stabilize, stopping experiment")
+                print(f"Full ring before crash:")
+                for node in full_ring:
+                    print(f"-- {node['id']} ({node['address']}) --> {node['successor']}")
+                print(f"\nPartial ring after crash:")
+                for node in ring:
+                    print(f"-- {node['id']} ({node['address']}) --> {node['successor']}")
+
+                # Get info on nodes that failed to join
+                ring_node_addresses = [node['address'] for node in ring]
+                failed_to_join = [node for node in living_nodes if node not in ring_node_addresses]
+                print(f"Failed to join: {failed_to_join}")
+                print(f"Crashed nodes: {crashing_nodes}")
+                #reset_network(participating_nodes)
+                sys.exit(1)
 
             # Recover all crashed nodes to reset network for next trial
             for node in crashing_nodes:
                 recover_node(node)
+            
+            print(f"Successfully crashed {burst_size} nodes and recovered again. {crashing_nodes}")
+            
+            # Reset network to original state
+            reset_network(participating_nodes)
+            
+            #sys.exit(0)
+            
+
+
+            
 
 
 # ======================
@@ -301,13 +325,13 @@ def main():
         writer.writeheader()
 
         # Run experiments
-        #experiment_grow(writer, all_nodes, mode="sequential")
+        experiment_grow(writer, all_nodes, mode="sequential")
         #experiment_grow(writer, all_nodes, mode="burst")
 
         #experiment_shrink(writer, all_nodes, mode="sequential")
         #experiment_shrink(writer, all_nodes, mode="burst")
 
-        experiment_crash_tolerance(writer, all_nodes)
+        #experiment_crash_tolerance(writer, all_nodes)
 
     print(f"\n Experiments complete. Results saved to {CSV_FILENAME}")
 
