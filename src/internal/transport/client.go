@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -15,10 +16,12 @@ import (
 
 // HTTPTransport represents the HTTP transport with its configuration
 type HTTPTransport struct {
-	node    dht.INode
-	server  *http.Server
-	address string
+	node       dht.INode
+	server     *http.Server
+	address    string
 	inactive   bool
+	fastClient *http.Client
+	slowClient *http.Client
 }
 
 // New creates a new server instance
@@ -29,6 +32,12 @@ func New(hostname string, port string, node dht.INode) (*HTTPTransport, error) {
 	t := &HTTPTransport{
 		node:    node,
 		address: hostname + ":" + port,
+		slowClient: &http.Client{
+			Timeout: 2 * time.Second,
+		},
+		fastClient: &http.Client{
+			Timeout: 500 * time.Millisecond,
+		},
 	}
 
 	// system endpoints
@@ -99,14 +108,47 @@ func (t *HTTPTransport) Address() string {
 
 // IMPLEMENTATION OF THE TRANSPORT INTERFACE
 // RPC between nodes
-func (t *HTTPTransport) GetPredecessor(addr string) (string, error) {
-	client := &http.Client{
-		Timeout: 2 * time.Second,
+
+// =============== MAINTENACE RPC'S ===============
+
+// FindSuccessor finds the successor of the key recursively
+// Used in stabilization and join operations
+func (t *HTTPTransport) FindSuccessor(addr string, keyId int) (successor string, err error) {
+
+	keyIdStr := strconv.Itoa(keyId)
+
+	// Use GET with query parameter
+	resp, err := t.fastClient.Get("http://" + addr + "/successor?key=" + url.QueryEscape(keyIdStr))
+	if err != nil {
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			err = fmt.Errorf("TIMEOUT: exceeded %v", ne.Timeout())
+		}
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("find successor request failed with status %d", resp.StatusCode)
 	}
 
-	resp, err := client.Get("http://" + addr + "/predecessor")
+	// Decode plain string response (not wrapped in object)
+	if err := json.NewDecoder(resp.Body).Decode(&successor); err != nil {
+		return "", fmt.Errorf("failed to decode successor response: %w", err)
+	}
+
+	return successor, nil
+}
+
+// GetPredecessor gets the predecessor of the node
+// Used in stabilization and leave operations
+func (t *HTTPTransport) GetPredecessor(addr string) (string, error) {
+
+	resp, err := t.fastClient.Get("http://" + addr + "/predecessor")
 	if err != nil {
-		return "", fmt.Errorf("failed to get predecessor from %s: %w", addr, err)
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			err = fmt.Errorf("TIMEOUT: exceeded %v", ne.Timeout())
+		}
+		return "", err
 	}
 	defer resp.Body.Close()
 
@@ -123,6 +165,7 @@ func (t *HTTPTransport) GetPredecessor(addr string) (string, error) {
 }
 
 // Notify notifies the node at the given address that it might have a new predecessor
+// Used in stabilization and join operations
 func (t *HTTPTransport) Notify(targetAddr string, newPredecessor string) error {
 
 	// Create JSON payload
@@ -139,13 +182,8 @@ func (t *HTTPTransport) Notify(targetAddr string, newPredecessor string) error {
 
 	req.Header.Set("Content-Type", "application/json")
 
-	// Create HTTP client with timeout
-	client := &http.Client{
-		Timeout: 2 * time.Second,
-	}
-
 	// Send request
-	resp, err := client.Do(req)
+	resp, err := t.fastClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to notify predecessor on %s: %w", targetAddr, err)
 	}
@@ -158,7 +196,27 @@ func (t *HTTPTransport) Notify(targetAddr string, newPredecessor string) error {
 	return nil
 }
 
-// Notify notifies the node at the given address that it might have a new predecessor
+// CheckAlive checks if the node at the given address is alive
+func (t *HTTPTransport) CheckAlive(targetAddr string) (bool, error) {
+
+	resp, err := t.fastClient.Get("http://" + targetAddr + "/ping")
+	if err != nil {
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			err = fmt.Errorf("TIMEOUT: exceeded %v", ne.Timeout())
+		}
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode == http.StatusOK, nil
+}
+
+// =============== AUTHORITY RPC'S ===============
+
+// RPC's that are important to conclude the DHT operations, uses slow client to ensure reliability
+
+// SetSuccessor sets the successor of the node
+// 2 seconds timeout
 func (t *HTTPTransport) SetSuccessor(targetAddr string, newSuccessor string) error {
 
 	// Create JSON payload
@@ -175,13 +233,8 @@ func (t *HTTPTransport) SetSuccessor(targetAddr string, newSuccessor string) err
 
 	req.Header.Set("Content-Type", "application/json")
 
-	// Create HTTP client with timeout
-	client := &http.Client{
-		Timeout: 2 * time.Second,
-	}
-
 	// Send request
-	resp, err := client.Do(req)
+	resp, err := t.slowClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to notify node at %s of new successor: %w", targetAddr, err)
 	}
@@ -194,6 +247,8 @@ func (t *HTTPTransport) SetSuccessor(targetAddr string, newSuccessor string) err
 	return nil
 }
 
+// SetPredecessor sets the predecessor of the node
+// 2 seconds timeout
 func (t *HTTPTransport) SetPredecessor(targetAddr string, newPredecessor string) error {
 
 	// Create JSON payload
@@ -210,13 +265,8 @@ func (t *HTTPTransport) SetPredecessor(targetAddr string, newPredecessor string)
 
 	req.Header.Set("Content-Type", "application/json")
 
-	// Create HTTP client with timeout
-	client := &http.Client{
-		Timeout: 2 * time.Second,
-	}
-
 	// Send request
-	resp, err := client.Do(req)
+	resp, err := t.slowClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to notify predecessor on %s: %w", targetAddr, err)
 	}
@@ -228,48 +278,6 @@ func (t *HTTPTransport) SetPredecessor(targetAddr string, newPredecessor string)
 
 	return nil
 
-}
-
-// CheckAlive checks if the node at the given address is alive
-func (t *HTTPTransport) CheckAlive(targetAddr string) (bool, error) {
-	client := &http.Client{
-		Timeout: 2 * time.Second,
-	}
-
-	resp, err := client.Get("http://" + targetAddr + "/ping")
-	if err != nil {
-		return false, fmt.Errorf("failed to check if %s is alive: %w", targetAddr, err)
-	}
-	defer resp.Body.Close()
-
-	return resp.StatusCode == http.StatusOK, nil
-}
-
-// FindSuccessor finds the successor of the key recursively
-func (t *HTTPTransport) FindSuccessor(addr string, keyId int) (successor string, err error) {
-	client := &http.Client{
-		Timeout: 2 * time.Second,
-	}
-
-	keyIdStr := strconv.Itoa(keyId)
-
-	// Use GET with query parameter
-	resp, err := client.Get("http://" + addr + "/successor?key=" + url.QueryEscape(keyIdStr))
-	if err != nil {
-		return "", fmt.Errorf("failed to find successor from %s: %w", addr, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("find successor request failed with status %d", resp.StatusCode)
-	}
-
-	// Decode plain string response (not wrapped in object)
-	if err := json.NewDecoder(resp.Body).Decode(&successor); err != nil {
-		return "", fmt.Errorf("failed to decode successor response: %w", err)
-	}
-
-	return successor, nil
 }
 
 func (t *HTTPTransport) IsInactive() bool {

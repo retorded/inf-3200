@@ -33,6 +33,8 @@ func (t *HTTPTransport) handleSuccessor(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 
+		//log.Printf("SERVER: received request to FindSuccessor for key %d", keyId)
+
 		successorAddr, err := t.node.FindSuccessor(keyId)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("failed to find successor: %v", err), http.StatusInternalServerError)

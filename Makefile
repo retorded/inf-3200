@@ -1,7 +1,7 @@
 # Simple Makefile for easier testing
 
 # Number of servers to run
-N=32
+N=4
 
 # Default target
 .PHONY: help

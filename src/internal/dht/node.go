@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
-	"sort"
 	"sync"
 	"time"
 )
@@ -66,80 +65,6 @@ func Create(address string) *Node {
 	return node
 }
 
-// Set all node attributes based on the given network
-func (n *Node) SetNetwork(network []string) {
-
-	self := node{
-		id:      n.Id(),
-		address: n.Address(),
-	}
-
-	// Create all nodes and init with id and address for creation of finger table
-	selfIndex := -1
-	nodes := make([]node, 0, len(network))
-	for _, nodeAddress := range network {
-		nodes = append(nodes, node{
-			id:      KeyToRingId(nodeAddress, ID_SPACE_SIZE),
-			address: nodeAddress})
-	}
-
-	// Sort the nodes by id in ascending order
-	sort.Slice(nodes, func(i, j int) bool {
-		return nodes[i].id < nodes[j].id
-	})
-
-	// Initialize finger table
-	finger := make([]fingerEntry, M)
-	for i := 0; i < M; i++ {
-		fingerKey := (self.id + (1 << i)) % ID_SPACE_SIZE
-
-		// Default: wrap around to first node
-		chosen := nodes[0]
-
-		// Find the first node with id >= fingerKey
-		for _, node := range nodes {
-			if node.id >= fingerKey {
-				chosen = node
-				break
-			}
-		}
-
-		succ := node{
-			id:      chosen.id,
-			address: chosen.address,
-		}
-
-		finger[i] = fingerEntry{
-			start: fingerKey,
-			node:  succ,
-		}
-	}
-
-	// Find this node's position in the sorted ring
-	for i, node := range nodes {
-		if node.id == self.id {
-			selfIndex = i
-			break
-		}
-	}
-
-	if selfIndex == -1 {
-		log.Println("WARNING: did not find self in network on init")
-	}
-
-	// Set successor and predecessor, indices account for wrap-around using modulo
-	successorIdx := (selfIndex + 1) % len(nodes)
-	predecessorIdx := (selfIndex - 1 + len(nodes)) % len(nodes)
-
-	// Set successor, predecessor and finger table
-	n.SetSuccessor(nodes[successorIdx].address)
-	n.SetPredecessor(nodes[predecessorIdx].address)
-
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.finger = finger
-}
-
 // SetTransport sets the transport of the node
 func (n *Node) SetTransport(transport Transport) {
 	n.mu.Lock()
@@ -149,7 +74,7 @@ func (n *Node) SetTransport(transport Transport) {
 
 // RunMaintenance runs the maintenance goroutines for the node at regular intervals.
 func (n *Node) RunMaintenance(ctx context.Context) {
-	maintenanceInterval := 100*time.Millisecond + time.Duration(rand.Intn(50))*time.Millisecond
+	maintenanceInterval := 200*time.Millisecond + time.Duration(rand.Intn(50))*time.Millisecond
 	maintenanceTicker := time.NewTicker(maintenanceInterval)
 
 	defer func() {
@@ -165,13 +90,16 @@ func (n *Node) RunMaintenance(ctx context.Context) {
 
 		case <-maintenanceTicker.C:
 			if !n.transport.IsInactive() {
-
 				// Check if predecessor is alive, set to empty if not
-				n.CheckPredecessor()
+				go n.CheckPredecessor()
+			}
 
+			if !n.transport.IsInactive() {
 				// Verify and update successor/predecessor links; detect node joins.
 				n.Stabilize()
+			}
 
+			if !n.transport.IsInactive() {
 				// Fix finger table entries
 				n.FixFinger(nextFingerIndex)
 				nextFingerIndex = (nextFingerIndex + 1) % M
@@ -189,7 +117,7 @@ func (n *Node) Stabilize() {
 
 	// If successor is self, we already know predecessor locally
 	if currSuccAddr == n.Address() {
-		_, predAddr := n.Predecessor() // helper to return n.predecessor.address
+		_, predAddr := n.Predecessor()
 		if predAddr != "" && predAddr != n.Address() {
 			predId := KeyToRingId(predAddr, ID_SPACE_SIZE)
 			if InIntervalOpen(predId, n.Id(), currSuccId) {
@@ -207,7 +135,7 @@ func (n *Node) Stabilize() {
 
 			predAddr, err := n.transport.GetPredecessor(candidate)
 			if err != nil {
-				log.Printf("Stabilize WARNING: failed to get predecessor from candidate successor '%s': %v", candidate, err)
+				log.Printf("Stabilize WARNING: failed to get predecessor from candidate '%s': %v", candidate, err)
 				log.Println("Stabilize: candidates list", candidates)
 				continue
 			}
@@ -268,11 +196,10 @@ func (n *Node) FixFinger(index int) {
 	currentFingerAddr := n.finger[index].node.address
 	n.mu.RUnlock()
 
-	// Query the ring for the successor to the key
+	// Find the closest successor to the entry id
 	successorAddr, err := n.FindSuccessor(start)
 	if err != nil {
-		log.Printf("FixFinger ERROR: %v", err)
-		// Treat as failed node
+		log.Printf("FixFinger: ERROR, failed to find successor to keyId %d", start)
 		n.removeFailedFinger(currentFingerAddr)
 		return
 	}
@@ -315,10 +242,25 @@ func (n *Node) CheckPredecessor() {
 		return
 	}
 
-	// Check if the predecessor is still alive
-	alive, err := n.transport.CheckAlive(predAddr)
+	// Retry logic
+	maxRetries := 3
+	var err error
+	alive := false
+	for i := 0; i < maxRetries; i++ {
+		alive, err = n.transport.CheckAlive(predAddr)
+		if alive && err == nil {
+			if i > 1 {
+				log.Printf("CheckPredecessor: SUCCESS on %v attempt, predecessor '%s' is alive", i+1, predAddr)
+			}
+			break
+		}
+		timeOutDuration := time.Duration(i*i) * 20 * time.Millisecond // quadratic backoffs
+		log.Printf("CheckPredecessor: ERROR '%s': %v, waiting %v before next attempt %v/%v", predAddr, err, timeOutDuration, i+1, maxRetries)
+		time.Sleep(timeOutDuration)
+	}
+
 	if !alive || err != nil {
-		log.Printf("Predecessor '%s' is NOT alive, setting own predecessor to empty", predAddr)
+		log.Printf("CheckPredecessor: WARNING, '%s' is NOT alive, setting own predecessor to empty", predAddr)
 		n.SetPredecessor("")
 	}
 }
@@ -482,45 +424,56 @@ func (n *Node) Get(key string) (value string, nextAddress string, err error) {
 }
 
 // FindSuccessor finds the successor of the input
-func (n *Node) FindSuccessor(keyId int) (successor string, err error) {
+func (n *Node) FindSuccessor(keyId int) (string, error) {
 
-	successorId, successorAddr := n.Successor()
+	ownSuccessorId, ownSuccessorAddr := n.Successor()
 
 	// Check if this node's successor is the successor for the key
-	if InIntervalRightInclusive(keyId, n.Id(), successorId) {
-		return successorAddr, nil
+	// This is the base case for the recursive search in the ring
+	if InIntervalRightInclusive(keyId, n.Id(), ownSuccessorId) {
+		return ownSuccessorAddr, nil
 	}
 
 	// Search the finger table for the closest preceeding nodes
 	candidates := n.closestPrecedingNodes(keyId)
+
+	// We now query these candidates if they have the successor of the keyId
 	for _, candidate := range candidates {
-		successor, err = n.transport.FindSuccessor(candidate, keyId)
+
+		successorAddr, err := n.transport.FindSuccessor(candidate, keyId)
+
 		if err != nil {
-			log.Printf("FindSuccessor ERROR: %v", err)
+			log.Printf("FindSuccessor WARNING, failed to contact '%s' trying next candidate in list: %v, %v", candidate, candidates, err)
 			continue
 		}
-		return successor, nil
+		return successorAddr, nil
 	}
 
-	log.Printf("FindSuccessor: all candidates failed (candidates: %v), falling back to own successor '%s'", candidates, successorAddr)
-	return successorAddr, nil
+	log.Printf("FindSuccessor: all closest preceding candidates failed (candidates: %v), falling back to own successor '%s'", candidates, ownSuccessorAddr)
+	return ownSuccessorAddr, nil
 
 }
 
+// Return the a list of nodes that are in the interval (n.id, keyId)
 func (n *Node) closestPrecedingNodes(keyId int) (candidates []string) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
+	// Deduplicate the list of candidates
+	seen := make(map[string]bool)
+
 	for i := len(n.finger) - 1; i >= 0; i-- {
 		fingerId := n.finger[i].node.id
-		if InIntervalOpen(fingerId, n.id, keyId) {
-			candidates = append(candidates, n.finger[i].node.address)
+		fingerAddr := n.finger[i].node.address
+		if InIntervalOpen(fingerId, n.id, keyId) && !seen[fingerAddr] {
+			candidates = append(candidates, fingerAddr)
+			seen[fingerAddr] = true
 		}
 	}
 	return candidates
 }
 
-// closestSuccessorNodes returns the closest successor nodes to the key
+// closestSuccessorNodes returns the closest successors based on the finger table
 // deduplicates the list of candidates, preserving the order of the original finger table
 func (n *Node) closestSuccessorNodes() (candidates []string) {
 	n.mu.RLock()
@@ -633,21 +586,21 @@ func (n *Node) resetToStartingState() {
 
 	// Reset all finger table entries to self
 	for i := 0; i < M; i++ {
-		n.finger[i] = fingerEntry{
-			node: self,
-		}
+		n.finger[i].node = self
 	}
 
 	log.Printf("ResetToStartingState: node is now %s", n.String())
+	log.Println("====================== RESET ===========================")
+	log.Println("")
 }
 
 // TODO: wrap FindSuccessor, GetPredecessor, Notify, in this function
-func retry(operation func() error, maxRetries int) error {
+func retry(operation func() (string, error), maxRetries int) (string, error) {
 	for i := 0; i < maxRetries; i++ {
-		if err := operation(); err == nil {
-			return nil
+		if result, err := operation(); err == nil {
+			return result, nil
 		}
 		time.Sleep(time.Duration(i*i) * 50 * time.Millisecond) // quadratic backoff
 	}
-	return fmt.Errorf("operation failed after %d retries", maxRetries)
+	return "", fmt.Errorf("operation failed after %d retries", maxRetries)
 }
