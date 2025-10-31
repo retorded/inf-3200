@@ -198,27 +198,7 @@ func (t *HTTPTransport) handleNetwork(w http.ResponseWriter, r *http.Request) {
 
 	// PUT: NETWORK INITIALIZATION
 
-	// Get the network from the request
-	networkStr := r.URL.Query().Get("network")
-
-	log.Printf("handleNetwork request received: %s, %s", r.URL.Query(), r.Method)
-
-	if r.Method == http.MethodPut {
-
-		// Parse network addresses
-		var network []string
-		if networkStr != "" {
-			network = strings.Split(networkStr, ",")
-			for i, addr := range network {
-				network[i] = strings.TrimSpace(addr)
-			}
-		}
-		// Create the ring node
-		t.node.SetNetwork(network)
-		log.Printf("Node updated with network: %s", t.node.String())
-		w.WriteHeader(http.StatusOK)
-		return
-	}
+	// deprecated
 
 	// GET: NETWORK TRAVERSAL
 
@@ -349,9 +329,10 @@ func (t *HTTPTransport) handleSimCrash(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Println("SERVER: Sim crash request received")
+
 	t.inactive = true
 	w.WriteHeader(http.StatusOK)
-	log.Println("Sim crash request received")
 }
 
 // handleSimRecover handles requests to the "/sim-recover" path
@@ -362,9 +343,11 @@ func (t *HTTPTransport) handleSimRecover(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	log.Println("SERVER: Recovery request received")
+
 	t.inactive = false
 	w.WriteHeader(http.StatusOK)
-	log.Println("SERVER: Recovery request received")
+
 }
 
 // HELPER
