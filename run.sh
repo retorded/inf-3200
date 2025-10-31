@@ -12,6 +12,9 @@ BENCHMARK_FILE="$OUTPUT_DIR/benchmark.csv"
 GO_SOURCE="cmd/server/main.go"
 PROJECT_ROOT="$PWD"
 
+# TESTING ON ONE SERVER
+LOCAL=false
+
 # Init function - first-time setup for new environment
 init() {
     echo "Initializing Go project..."
@@ -74,7 +77,13 @@ deploy() {
     PORTS=()
     NETWORK=()
     for ((i=0; i<NUM_SERVERS; i++)); do
-        NODE=${AVAILABLE_NODES[$((i % NUM_NODES))]}
+
+        if $LOCAL; then
+            # Use the first available node
+            NODE=${AVAILABLE_NODES[0]}
+        else
+            NODE=${AVAILABLE_NODES[$((i % NUM_NODES))]}
+        fi
 
         # Start node and perform wellness check. Continue if successful.
         while true; do
